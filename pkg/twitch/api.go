@@ -253,46 +253,49 @@ func (a *TwitchAPI) StreamMetadata(ctx context.Context, channel string) (*Metada
 
 // doGQL sends a persisted query and falls back to full query text on hash miss.
 func (a *TwitchAPI) doGQL(ctx context.Context, operationName, hash string, variables map[string]any, extraHeaders map[string]string) (json.RawMessage, error) {
-	reqBody := gqlRequest{
-		OperationName: operationName,
-		Extensions: gqlExtensions{
-			PersistedQuery: gqlPersistedQuery{
-				Version:    1,
-				SHA256Hash: hash,
+	// When hash is empty, skip straight to full query fallback.
+	if hash != "" {
+		reqBody := gqlRequest{
+			OperationName: operationName,
+			Extensions: gqlExtensions{
+				PersistedQuery: gqlPersistedQuery{
+					Version:    1,
+					SHA256Hash: hash,
+				},
 			},
-		},
-		Variables: variables,
-	}
+			Variables: variables,
+		}
 
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("twitch: marshal gql request: %w", err)
-	}
+		bodyBytes, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("twitch: marshal gql request: %w", err)
+		}
 
-	slog.Debug("GQL request", "operation", operationName)
+		slog.Debug("GQL request", "operation", operationName)
 
-	data, err := a.doGQLRoundTrip(ctx, bodyBytes, extraHeaders, operationName)
-	if err == nil {
-		return data, nil
-	}
+		data, err := a.doGQLRoundTrip(ctx, bodyBytes, extraHeaders, operationName)
+		if err == nil {
+			return data, nil
+		}
 
-	if !isPersistedQueryNotFound(err) {
-		return nil, err
+		if !isPersistedQueryNotFound(err) {
+			return nil, err
+		}
 	}
 
 	queryText, ok := fallbackQueries[operationName]
 	if !ok {
-		return nil, err
+		return nil, fmt.Errorf("twitch: no query text for operation %q", operationName)
 	}
 
-	slog.Warn("persisted query hash stale, using fallback", "operation", operationName)
+	slog.Debug("GQL fallback query", "operation", operationName)
 
 	fallbackBody := gqlFallbackRequest{
 		OperationName: operationName,
 		Query:         queryText,
 		Variables:     variables,
 	}
-	bodyBytes, err = json.Marshal(fallbackBody)
+	bodyBytes, err := json.Marshal(fallbackBody)
 	if err != nil {
 		return nil, fmt.Errorf("twitch: marshal gql fallback request: %w", err)
 	}

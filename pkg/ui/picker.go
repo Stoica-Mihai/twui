@@ -642,19 +642,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadCurrentView()
 
 	case "j", "down":
-		m.moveCursor(1)
+		m = m.moveCursor(1)
 		return m, nil
 
 	case "k", "up":
-		m.moveCursor(-1)
+		m = m.moveCursor(-1)
 		return m, nil
 
 	case "pgdown":
-		m.moveCursor(10)
+		m = m.moveCursor(10)
 		return m, nil
 
 	case "pgup":
-		m.moveCursor(-10)
+		m = m.moveCursor(-10)
 		return m, nil
 
 	case "g":
@@ -805,9 +805,9 @@ func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		m.moveCursor(-1)
+		m = m.moveCursor(-1)
 	case tea.MouseWheelDown:
-		m.moveCursor(1)
+		m = m.moveCursor(1)
 	}
 	return m, nil
 }
