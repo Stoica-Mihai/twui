@@ -3,8 +3,6 @@ package ui
 import (
 	"context"
 	"time"
-
-	"github.com/mcs/twui/pkg/twitch"
 )
 
 // EntryKind distinguishes between row types in the TUI.
@@ -21,30 +19,28 @@ type DiscoveryEntry struct {
 	Kind EntryKind
 
 	// Channel fields (EntryChannel)
-	Login       string
-	DisplayName string
-	Title       string
-	Category    string
-	ViewerCount int
-	StartedAt   time.Time
-	AvatarURL   string
-	IsFavorite  bool
-	IsLive      bool
+	Login           string
+	DisplayName     string
+	Title           string
+	Category        string
+	ViewerCount     int
+	StartedAt       time.Time
+	AvatarURL       string
+	IsFavorite      bool
+	IsLive          bool
 
 	// Category fields (EntryCategory)
-	CategoryName string
+	CategoryName    string
 	CategoryViewers int
-	BoxArtURL    string
+	BoxArtURL       string
 
 	// Pagination cursor for LoadMore rows
 	Cursor string
 }
 
 // DiscoveryFuncs holds callbacks that the picker model calls for data fetching.
-// Each function must be non-nil.
 type DiscoveryFuncs struct {
 	// WatchList returns current favorites with their live status.
-	// Channels returned are always the favorites list; IsLive may be false.
 	WatchList func(ctx context.Context) ([]DiscoveryEntry, error)
 
 	// Search returns live channels matching the query string.
@@ -70,29 +66,4 @@ type DiscoveryFuncs struct {
 
 	// IgnoreList returns all currently ignored channels.
 	IgnoreList func() []string
-}
-
-// channelToEntry converts a twitch.ChannelResult to a DiscoveryEntry.
-func channelToEntry(r twitch.ChannelResult, isLive bool) DiscoveryEntry {
-	return DiscoveryEntry{
-		Kind:        EntryChannel,
-		Login:       r.Login,
-		DisplayName: r.DisplayName,
-		Title:       r.Title,
-		Category:    r.Category,
-		ViewerCount: r.ViewerCount,
-		StartedAt:   r.StartedAt,
-		AvatarURL:   r.AvatarURL,
-		IsLive:      isLive,
-	}
-}
-
-// categoryToEntry converts a twitch.CategoryResult to a DiscoveryEntry.
-func categoryToEntry(r twitch.CategoryResult) DiscoveryEntry {
-	return DiscoveryEntry{
-		Kind:            EntryCategory,
-		CategoryName:    r.Name,
-		CategoryViewers: r.ViewerCount,
-		BoxArtURL:       r.BoxArtURL,
-	}
 }

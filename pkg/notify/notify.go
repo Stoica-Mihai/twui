@@ -1,4 +1,4 @@
-// Package notify provides desktop notification support for ghyll.
+// Package notify provides desktop notification support for twui.
 package notify
 
 import (

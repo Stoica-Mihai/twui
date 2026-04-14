@@ -33,7 +33,7 @@ func (m *MuxedStream) Open() (io.ReadCloser, error) {
 		return nil, fmt.Errorf("muxed: ffmpeg not found: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "ghyll-mux-*")
+	tmpDir, err := os.MkdirTemp("", "twui-mux-*")
 	if err != nil {
 		return nil, fmt.Errorf("muxed: failed to create temp directory: %w", err)
 	}
