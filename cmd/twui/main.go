@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -240,18 +242,11 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			if err != nil {
 				return nil, err
 			}
-			names := make([]string, 0, len(streams))
-			for name := range streams {
-				names = append(names, name)
-			}
-			return names, nil
+			return sortedStreamNames(streams), nil
 		},
 
 		Launch: func(c context.Context, channel, quality string, send func(ui.Status, string)) {
 			send(ui.StatusWaiting, "")
-
-			url := fmt.Sprintf("https://twitch.tv/%s", channel)
-			_ = url
 
 			streams, err := client.Streams(c, channel)
 			if err != nil {
@@ -377,20 +372,85 @@ func applyHexOverrides(t *ui.Theme) {
 
 // selectBestQuality returns the quality name with the highest weight.
 func selectBestQuality(streams map[string]stream.Stream) string {
-	// Prefer "source", then highest resolution
-	if _, ok := streams["source"]; ok {
-		return "source"
-	}
-	// Simple: pick first non-audio-only
+	best := ""
+	bestWeight := -1.0
 	for name := range streams {
-		if name != "audio_only" {
-			return name
+		w := streamWeight(name)
+		if w > bestWeight {
+			bestWeight = w
+			best = name
 		}
 	}
-	for name := range streams {
-		return name
+	return best
+}
+
+// sortedStreamNames returns stream names sorted by weight descending (for quality picker).
+func sortedStreamNames(streams map[string]stream.Stream) []string {
+	type entry struct {
+		name   string
+		weight float64
 	}
-	return ""
+	entries := make([]entry, 0, len(streams))
+	for name := range streams {
+		entries = append(entries, entry{name: name, weight: streamWeight(name)})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].weight > entries[j].weight
+	})
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.name
+	}
+	return names
+}
+
+// streamWeight computes a numeric weight for a stream quality name.
+func streamWeight(name string) float64 {
+	lower := strings.ToLower(name)
+	if lower == "source" {
+		return 1e18
+	}
+	if lower == "audio_only" {
+		return 0
+	}
+
+	baseName := lower
+	altPenalty := 0.0
+	if idx := strings.Index(lower, "_alt"); idx >= 0 {
+		altSuffix := lower[idx+4:]
+		altNum := 1
+		if altSuffix != "" {
+			if n, err := strconv.Atoi(altSuffix); err == nil {
+				altNum = n
+			}
+		}
+		altPenalty = 0.01 * float64(altNum)
+		baseName = lower[:idx]
+	}
+
+	if strings.Contains(baseName, "p") {
+		parts := strings.SplitN(baseName, "p", 2)
+		if len(parts) >= 1 {
+			pixels, err := strconv.ParseFloat(parts[0], 64)
+			if err == nil {
+				fps := 0.0
+				if len(parts) == 2 && parts[1] != "" {
+					fps, _ = strconv.ParseFloat(parts[1], 64)
+				}
+				return pixels + fps - altPenalty
+			}
+		}
+	}
+
+	if strings.HasSuffix(baseName, "k") {
+		bitrateStr := strings.TrimSuffix(baseName, "k")
+		bitrate, err := strconv.ParseFloat(bitrateStr, 64)
+		if err == nil {
+			return bitrate/2.8 - altPenalty
+		}
+	}
+
+	return 1 - altPenalty
 }
 
 // writeConfigList persists a config list value to the config file.

@@ -66,15 +66,18 @@ type (
 		status  Status
 		detail  string
 		gen     int
+		done    bool
 	}
 )
 
 // playbackSession tracks an active or recent playback.
 type playbackSession struct {
+	ctx    context.Context
 	cancel context.CancelFunc
 	status Status
 	detail string
 	gen    int
+	ch     chan statusUpdateMsg
 }
 
 // Model is the main Bubble Tea model for twui.
@@ -227,8 +230,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statusUpdateMsg:
 		if s, ok := m.sessions[msg.channel]; ok && s.gen == msg.gen {
+			if msg.done {
+				s.cancel()
+				delete(m.sessions, msg.channel)
+				return m, nil
+			}
 			s.status = msg.status
 			s.detail = msg.detail
+			return m, waitPlayback(s.ctx, s.ch, msg.channel, msg.gen)
 		}
 		return m, nil
 	}
@@ -1093,22 +1102,53 @@ func (m Model) launchStream(channel, quality string) tea.Cmd {
 
 	if old, ok := m.sessions[channel]; ok {
 		old.cancel()
+		// Drain old channel
+		if old.ch != nil {
+			go func() {
+				for range old.ch {
+				}
+			}()
+		}
 	}
 
-	ctx, cancel := context.WithCancel(m.ctx)
+	ch := make(chan statusUpdateMsg, 16)
+	sctx, cancel := context.WithCancel(m.ctx)
 	m.sessions[channel] = &playbackSession{
+		ctx:    sctx,
 		cancel: cancel,
 		status: StatusWaiting,
 		gen:    gen,
+		ch:     ch,
 	}
+	ctx := sctx
 
 	fns := m.fns
-	return func() tea.Msg {
-		go fns.Launch(ctx, channel, quality, func(status Status, detail string) {
-			// Status updates are sent back through the program. The caller (main.go)
-			// wires up a send function that dispatches to the tea.Program.
+	go func() {
+		fns.Launch(ctx, channel, quality, func(status Status, detail string) {
+			select {
+			case ch <- statusUpdateMsg{channel: channel, status: status, detail: detail, gen: gen}:
+			default:
+			}
 		})
-		return statusUpdateMsg{channel: channel, status: StatusWaiting, detail: "", gen: gen}
+		ch <- statusUpdateMsg{channel: channel, done: true, gen: gen}
+		close(ch)
+	}()
+
+	return waitPlayback(ctx, ch, channel, gen)
+}
+
+// waitPlayback returns a Cmd that reads one event from the playback channel.
+func waitPlayback(ctx context.Context, ch <-chan statusUpdateMsg, channel string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case msg, ok := <-ch:
+			if !ok || msg.done {
+				return statusUpdateMsg{channel: channel, done: true, gen: gen}
+			}
+			return msg
+		case <-ctx.Done():
+			return statusUpdateMsg{channel: channel, done: true, gen: gen}
+		}
 	}
 }
 
