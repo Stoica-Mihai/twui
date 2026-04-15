@@ -456,7 +456,7 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 		}
 
 		if selected {
-			row = m.styles.selected.Width(m.width).Render(row)
+			row = m.styles.selected.Render(padRight(stripANSI(row), m.width))
 		}
 
 		lines = append(lines, row)
@@ -506,7 +506,7 @@ func (m Model) renderCategoryList(entries []DiscoveryEntry, height int) []string
 			m.styles.text.Render(pad(viewStr, colViewers))
 
 		if selected {
-			row = m.styles.selected.Width(m.width).Render(row)
+			row = m.styles.selected.Render(padRight(stripANSI(row), m.width))
 		}
 
 		lines = append(lines, row)
