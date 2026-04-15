@@ -18,6 +18,7 @@ const (
 	viewModeWatchList viewMode = iota
 	viewModeBrowse
 	viewModeSearch
+	viewModeIgnored
 )
 
 // overlayMode identifies an active overlay.
@@ -28,6 +29,7 @@ const (
 	overlayQuality             // quality picker for a channel
 	overlayHelp                // help screen
 	overlayTheme               // theme picker
+	overlayRelated             // related/host channels
 )
 
 // internal Bubble Tea messages
@@ -57,6 +59,11 @@ type (
 		channel   string
 		qualities []string
 		err       error
+	}
+	relatedResultMsg struct {
+		channel string
+		hosts   []DiscoveryEntry
+		err     error
 	}
 	searchDebounceMsg struct {
 		query string
@@ -100,6 +107,7 @@ type Model struct {
 	searchQuery string
 	searchInput string
 	searching   bool
+	ignoredList []DiscoveryEntry
 
 	categoryStack  []string
 	categoryList   []DiscoveryEntry
@@ -113,6 +121,8 @@ type Model struct {
 	overlayList    []string
 	overlayCursor  int
 	overlayChannel string
+	relatedHosts   []DiscoveryEntry
+	relatedLoading bool
 
 	// playback
 	sessions map[string]*playbackSession
@@ -221,6 +231,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.overlayChannel = msg.channel
 		return m, nil
 
+	case relatedResultMsg:
+		m.relatedLoading = false
+		if msg.err == nil {
+			m.relatedHosts = msg.hosts
+		}
+		return m, nil
+
 	case searchDebounceMsg:
 		if msg.query != m.searchInput {
 			return m, nil
@@ -295,6 +312,7 @@ func (m Model) renderTabBar() string {
 		{"Watch List", viewModeWatchList},
 		{"Browse", viewModeBrowse},
 		{"Search", viewModeSearch},
+		{"Ignored", viewModeIgnored},
 	}
 
 	var parts []string
@@ -323,6 +341,8 @@ func (m Model) renderBody(height int) string {
 		}
 	case viewModeSearch:
 		lines = m.renderSearchView(height)
+	case viewModeIgnored:
+		lines = m.renderIgnoredList(height)
 	}
 
 	for len(lines) < height {
@@ -536,6 +556,8 @@ func (m Model) renderOverlay() string {
 		return m.renderHelpOverlay()
 	case overlayTheme:
 		return m.renderThemeOverlay()
+	case overlayRelated:
+		return m.renderRelatedOverlay()
 	}
 	return ""
 }
@@ -578,6 +600,70 @@ func (m Model) renderThemeOverlay() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m Model) renderIgnoredList(height int) []string {
+	ignored := m.fns.IgnoreList()
+	if len(ignored) == 0 {
+		return []string{"  No ignored channels.  Press x on a channel in any view to ignore it."}
+	}
+
+	header := m.styles.title.Render(pad("  Ignored Channel", m.width-2))
+	lines := []string{header}
+
+	visibleStart := 0
+	if m.cursor >= height-2 {
+		visibleStart = m.cursor - (height - 3)
+	}
+
+	for i, ch := range ignored {
+		if i < visibleStart {
+			continue
+		}
+		if len(lines) >= height {
+			break
+		}
+		selected := i == m.cursor
+		row := "  " + ch
+		if selected {
+			row = m.styles.selected.Render(padRight(row, m.width))
+		} else {
+			row = m.styles.offline.Render(row)
+		}
+		lines = append(lines, row)
+	}
+	return lines
+}
+
+func (m Model) renderRelatedOverlay() string {
+	title := fmt.Sprintf(" Hosting — %s ", m.overlayChannel)
+	w := 40
+	if len(title) > w {
+		w = len(title)
+	}
+	lines := []string{
+		m.styles.border.Render("┌" + strings.Repeat("─", w) + "┐"),
+		m.styles.border.Render("│") + m.styles.title.Render(pad(title, w)) + m.styles.border.Render("│"),
+		m.styles.border.Render("├" + strings.Repeat("─", w) + "┤"),
+	}
+	if m.relatedLoading {
+		row := pad("  Loading...", w)
+		lines = append(lines, m.styles.border.Render("│")+m.styles.text.Render(row)+m.styles.border.Render("│"))
+	} else if len(m.relatedHosts) == 0 {
+		row := pad("  Not hosting anyone.", w)
+		lines = append(lines, m.styles.border.Render("│")+m.styles.text.Render(row)+m.styles.border.Render("│"))
+	} else {
+		for _, h := range m.relatedHosts {
+			name := h.DisplayName
+			if name == "" {
+				name = h.Login
+			}
+			row := pad("  "+name, w)
+			lines = append(lines, m.styles.border.Render("│")+m.styles.live.Render(row)+m.styles.border.Render("│"))
+		}
+	}
+	lines = append(lines, m.styles.border.Render("└"+strings.Repeat("─", w)+"┘"))
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) renderHelpOverlay() string {
 	keys := [][2]string{
 		{"Tab / Shift+Tab", "Switch view"},
@@ -591,7 +677,7 @@ func (m Model) renderHelpOverlay() string {
 		{"x", "Toggle ignore"},
 		{"i", "Quality picker"},
 		{"t", "Theme picker"},
-		{"r", "Refresh watch list"},
+		{"r", "Related/host channels"},
 		{"?", "Toggle help"},
 		{"q / Ctrl+C", "Quit"},
 	}
@@ -627,6 +713,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleThemeKey(msg)
 	}
 
+	if m.overlay == overlayRelated {
+		return m.handleRelatedKey(msg)
+	}
+
 	if m.searching {
 		return m.handleSearchInput(msg)
 	}
@@ -641,12 +731,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab":
-		m.mode = (m.mode + 1) % 3
+		m.mode = (m.mode + 1) % 4
 		m.cursor = 0
 		return m, m.loadCurrentView()
 
 	case "shift+tab":
-		m.mode = (m.mode + 2) % 3
+		m.mode = (m.mode + 3) % 4
 		m.cursor = 0
 		return m, m.loadCurrentView()
 
@@ -706,7 +796,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "r":
-		return m, m.loadWatchList()
+		return m.handleRelated()
 
 	case "/":
 		if m.mode != viewModeSearch {
@@ -756,7 +846,37 @@ func (m Model) handleThemeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		m.overlay = overlayNone
-		// Theme already applied via buildStyles above; caller writes config if needed
+		if m.fns.WriteTheme != nil {
+			m.fns.WriteTheme(Presets[m.themeIdx].Name)
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleRelated() (tea.Model, tea.Cmd) {
+	e := m.currentEntry()
+	if e == nil || e.Kind != EntryChannel {
+		return m, nil
+	}
+	ch := e.Login
+	m.overlay = overlayRelated
+	m.overlayChannel = ch
+	m.relatedHosts = nil
+	m.relatedLoading = true
+	ctx := m.ctx
+	fns := m.fns
+	return m, func() tea.Msg {
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		hosts, err := fns.HostingChannels(c, ch)
+		return relatedResultMsg{channel: ch, hosts: hosts, err: err}
+	}
+}
+
+func (m Model) handleRelatedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "r", "q", "Q":
+		m.overlay = overlayNone
 	}
 	return m, nil
 }
@@ -861,6 +981,9 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 				return m, m.launchStream(e.Login, "")
 			}
 		}
+	case viewModeIgnored:
+		// Enter in Ignored view un-ignores the selected channel
+		return m.handleIgnoredUnignore()
 	}
 	return m, nil
 }
@@ -882,6 +1005,20 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleFavorite() (tea.Model, tea.Cmd) {
+	if m.mode == viewModeIgnored {
+		// In Ignored view: un-ignore + add to favorites
+		ignored := m.fns.IgnoreList()
+		if m.cursor >= len(ignored) {
+			return m, nil
+		}
+		ch := ignored[m.cursor]
+		m.fns.ToggleIgnore(ch, false)
+		m.fns.ToggleFavorite(ch, true)
+		if m.cursor > 0 && m.cursor >= len(ignored)-1 {
+			m.cursor--
+		}
+		return m, nil
+	}
 	e := m.currentEntry()
 	if e == nil || e.Kind != EntryChannel {
 		return m, nil
@@ -892,12 +1029,28 @@ func (m Model) handleFavorite() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleIgnore() (tea.Model, tea.Cmd) {
+	if m.mode == viewModeIgnored {
+		return m.handleIgnoredUnignore()
+	}
 	e := m.currentEntry()
 	if e == nil || e.Kind != EntryChannel {
 		return m, nil
 	}
 	m.fns.ToggleIgnore(e.Login, true)
 	m.removeCurrentEntry()
+	return m, nil
+}
+
+func (m Model) handleIgnoredUnignore() (tea.Model, tea.Cmd) {
+	ignored := m.fns.IgnoreList()
+	if m.cursor >= len(ignored) {
+		return m, nil
+	}
+	ch := ignored[m.cursor]
+	m.fns.ToggleIgnore(ch, false)
+	if m.cursor > 0 && m.cursor >= len(ignored)-1 {
+		m.cursor--
+	}
 	return m, nil
 }
 
@@ -938,6 +1091,9 @@ func (m Model) currentEntry() *DiscoveryEntry {
 		if m.cursor < len(m.searchList) {
 			return &m.searchList[m.cursor]
 		}
+	case viewModeIgnored:
+		// Ignored view uses IgnoreList() directly; return nil (handled separately)
+		return nil
 	}
 	return nil
 }
@@ -995,6 +1151,8 @@ func (m Model) currentListLen() int {
 		return len(m.browseList)
 	case viewModeSearch:
 		return len(m.searchList)
+	case viewModeIgnored:
+		return len(m.fns.IgnoreList())
 	}
 	return 0
 }

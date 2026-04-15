@@ -324,6 +324,26 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		IgnoreList: func() []string {
 			return ignored
 		},
+
+		HostingChannels: func(c context.Context, channel string) ([]ui.DiscoveryEntry, error) {
+			hosts, err := api.HostingChannels(c, channel)
+			if err != nil {
+				return nil, err
+			}
+			entries := make([]ui.DiscoveryEntry, 0, len(hosts))
+			for _, h := range hosts {
+				entries = append(entries, ui.DiscoveryEntry{
+					Kind:        ui.EntryChannel,
+					Login:       h.Login,
+					DisplayName: h.DisplayName,
+				})
+			}
+			return entries, nil
+		},
+
+		WriteTheme: func(name string) {
+			writeConfigString("theming.theme", name)
+		},
 	}
 
 	model := ui.NewModel(fns, theme)
@@ -451,6 +471,70 @@ func streamWeight(name string) float64 {
 	}
 
 	return 1 - altPenalty
+}
+
+// writeConfigString persists a single string config value to the config file.
+func writeConfigString(key, value string) {
+	viper.Set(key, value)
+	configFile := viper.ConfigFileUsed()
+	if configFile == "" {
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			return
+		}
+		dir := filepath.Join(configDir, "twui")
+		_ = os.MkdirAll(dir, 0700)
+		configFile = filepath.Join(dir, "config.toml")
+		viper.SetConfigFile(configFile)
+	}
+	if err := writeConfigStringKey(configFile, key, value); err != nil {
+		slog.Warn("Failed to write config", "key", key, "err", err)
+	}
+}
+
+// writeConfigStringKey does a targeted in-place text replacement of a string config key.
+func writeConfigStringKey(path, key, value string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	parts := strings.SplitN(key, ".", 2)
+	var tomlKey string
+	if len(parts) == 2 {
+		tomlKey = parts[1]
+	} else {
+		tomlKey = key
+	}
+
+	newLine := fmt.Sprintf("%s = %q", tomlKey, value)
+	lines := strings.Split(string(raw), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, tomlKey+" =") || strings.HasPrefix(trimmed, tomlKey+"=") {
+			lines[i] = newLine
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, fmt.Sprintf("%s = %q", key, value))
+	}
+
+	content := strings.Join(lines, "\n")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "twui-config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	tmp.Close()
+	return os.Rename(tmpName, path)
 }
 
 // writeConfigList persists a config list value to the config file.

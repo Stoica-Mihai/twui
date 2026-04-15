@@ -66,4 +66,10 @@ type DiscoveryFuncs struct {
 
 	// IgnoreList returns all currently ignored channels.
 	IgnoreList func() []string
+
+	// HostingChannels returns channels that are hosting the given channel.
+	HostingChannels func(ctx context.Context, channel string) ([]DiscoveryEntry, error)
+
+	// WriteTheme persists the selected theme name to the config file.
+	WriteTheme func(name string)
 }
