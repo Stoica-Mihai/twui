@@ -456,7 +456,7 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 		}
 
 		if selected {
-			row = m.styles.selected.Render(padRight(row, m.width))
+			row = m.styles.selected.Width(m.width).Render(row)
 		}
 
 		lines = append(lines, row)
@@ -506,7 +506,7 @@ func (m Model) renderCategoryList(entries []DiscoveryEntry, height int) []string
 			m.styles.text.Render(pad(viewStr, colViewers))
 
 		if selected {
-			row = m.styles.selected.Render(padRight(row, m.width))
+			row = m.styles.selected.Width(m.width).Render(row)
 		}
 
 		lines = append(lines, row)
@@ -1321,11 +1321,35 @@ func pad(s string, width int) string {
 }
 
 func padRight(s string, width int) string {
-	w := runewidth.StringWidth(s)
+	w := runewidth.StringWidth(stripANSI(s))
 	if w >= width {
 		return s
 	}
 	return s + strings.Repeat(" ", width-w)
+}
+
+// stripANSI removes ANSI/VT100 escape sequences so runewidth can measure
+// the visual width of a string that may contain terminal styling.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inEsc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			// Sequences end at the first letter (CSI sequences like \x1b[...m).
+			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 func cellTruncate(s string, width int) string {
@@ -1434,22 +1458,3 @@ func overlayOn(base, overlay string, width, height int) string {
 	return strings.Join(result, "\n")
 }
 
-// stripANSI removes ANSI escape sequences for width measurement.
-func stripANSI(s string) string {
-	var out strings.Builder
-	inEsc := false
-	for _, r := range s {
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		if r == '\x1b' {
-			inEsc = true
-			continue
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
-}

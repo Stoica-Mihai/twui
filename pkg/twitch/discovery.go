@@ -41,18 +41,10 @@ func (a *TwitchAPI) SearchChannels(ctx context.Context, query string, limit int)
 	}
 
 	variables := map[string]any{
-		"query":                 query,
-		"first":                 limit,
-		"includeIsDJ":           false,
-		"requestID":             "",
-		"context":               "SEARCH",
-		"platform":              "web",
-		"isLiverailEnabled":     false,
-		"isVodEnabled":          true,
-		"isMobile":              false,
-		"isGameEnabled":         false,
-		"isChannelEnabled":      true,
-		"shouldRenderPersonalized": false,
+		"query":    query,
+		"first":    limit,
+		"cursor":   "",
+		"platform": "web",
 	}
 
 	body, err := a.doGQL(ctx, "SearchResultsPage", "", variables, nil)
@@ -122,42 +114,44 @@ func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor stri
 	}
 
 	variables := map[string]any{
-		"limit":  limit,
-		"cursor": cursor,
+		"limit": limit,
+	}
+	if cursor != "" {
+		variables["after"] = cursor
 	}
 
-	body, err := a.doGQL(ctx, "BrowsePage_AllDirectories", "", variables, nil)
+	body, err := a.doGQL(ctx, "GamesDirectory", "", variables, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("twitch: browse categories: %w", err)
 	}
 
 	var data struct {
-		DirectoriesWithTags *struct {
+		Games *struct {
 			Edges []struct {
 				Cursor string `json:"cursor"`
 				Node   struct {
-					ID          string `json:"id"`
-					Name        string `json:"name"`
-					ViewersCount int   `json:"viewersCount"`
-					BoxArtURL   string `json:"boxArtURL"`
+					ID           string `json:"id"`
+					Name         string `json:"name"`
+					ViewersCount int    `json:"viewersCount"`
+					BoxArtURL    string `json:"boxArtURL"`
 				} `json:"node"`
 			} `json:"edges"`
 			PageInfo *struct {
 				HasNextPage bool `json:"hasNextPage"`
 			} `json:"pageInfo"`
-		} `json:"directoriesWithTags"`
+		} `json:"games"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, "", fmt.Errorf("twitch: parse browse categories: %w", err)
 	}
 
-	if data.DirectoriesWithTags == nil {
+	if data.Games == nil {
 		return nil, "", nil
 	}
 
-	results := make([]CategoryResult, 0, len(data.DirectoriesWithTags.Edges))
+	results := make([]CategoryResult, 0, len(data.Games.Edges))
 	var nextCursor string
-	for _, edge := range data.DirectoriesWithTags.Edges {
+	for _, edge := range data.Games.Edges {
 		results = append(results, CategoryResult{
 			ID:          edge.Node.ID,
 			Name:        edge.Node.Name,
@@ -167,7 +161,7 @@ func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor stri
 		nextCursor = edge.Cursor
 	}
 
-	if data.DirectoriesWithTags.PageInfo != nil && !data.DirectoriesWithTags.PageInfo.HasNextPage {
+	if data.Games.PageInfo != nil && !data.Games.PageInfo.HasNextPage {
 		nextCursor = ""
 	}
 
@@ -303,8 +297,8 @@ func (a *TwitchAPI) HostingChannels(ctx context.Context, channel string) ([]Host
 
 // fallback query text for discovery operations (hashes start empty → always fallback)
 func init() {
-	fallbackQueries["SearchResultsPage"] = `query SearchResultsPage($query: String!, $first: Int, $context: String, $cursor: String, $platform: String, $requestID: String, $includeIsDJ: Boolean!, $isVodEnabled: Boolean!, $isGameEnabled: Boolean!, $isChannelEnabled: Boolean!, $isMobile: Boolean!, $isLiverailEnabled: Boolean!, $shouldRenderPersonalized: Boolean!) {
-  searchFor(userQuery: $query, platform: $platform, requestID: $requestID, target: {cursor: $cursor, index: CHANNEL, limit: $first, sessionID: ""}, shouldRenderPersonalized: $shouldRenderPersonalized) @include(if: $isChannelEnabled) {
+	fallbackQueries["SearchResultsPage"] = `query SearchResultsPage($query: String!, $first: Int, $cursor: String, $platform: String!) {
+  searchFor(userQuery: $query, platform: $platform, target: {cursor: $cursor, index: CHANNEL, limit: $first}) {
     channels {
       items {
         id
@@ -319,20 +313,15 @@ func init() {
           game {
             id
             name
-            __typename
           }
-          __typename
         }
-        __typename
       }
-      __typename
     }
-    __typename
   }
 }`
 
-	fallbackQueries["BrowsePage_AllDirectories"] = `query BrowsePage_AllDirectories($limit: Int, $cursor: String) {
-  directoriesWithTags(first: $limit, after: $cursor) {
+	fallbackQueries["GamesDirectory"] = `query GamesDirectory($limit: Int, $after: Cursor) {
+  games(first: $limit, after: $after) {
     edges {
       cursor
       node {
@@ -340,14 +329,11 @@ func init() {
         name
         viewersCount
         boxArtURL(width: 188, height: 250)
-        __typename
       }
-      __typename
     }
     pageInfo {
       hasNextPage
     }
-    __typename
   }
 }`
 

@@ -3,6 +3,9 @@ package twitch
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,9 +84,19 @@ var fallbackQueries = map[string]string{
 type TwitchAPI struct {
 	ClientID          string
 	UserAgent         string
+	DeviceID          string
 	client            *http.Client
 	headers           map[string]string
 	accessTokenParams map[string]string
+}
+
+// newDeviceID generates a random UUID v4 string for use as X-Device-ID.
+func newDeviceID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // AccessTokenResponse holds the signature and token returned by the
@@ -110,9 +123,11 @@ type gqlPersistedQuery struct {
 }
 
 // gqlFallbackRequest is the JSON body sent when falling back to a full query.
+// Extensions is included so the server can register the query hash (APQ registration).
 type gqlFallbackRequest struct {
 	OperationName string         `json:"operationName"`
 	Query         string         `json:"query"`
+	Extensions    gqlExtensions  `json:"extensions"`
 	Variables     map[string]any `json:"variables"`
 }
 
@@ -137,6 +152,7 @@ func NewTwitchAPI(client *http.Client, clientID, userAgent string, customHeaders
 	return &TwitchAPI{
 		ClientID:          clientID,
 		UserAgent:         userAgent,
+		DeviceID:          newDeviceID(),
 		client:            client,
 		headers:           customHeaders,
 		accessTokenParams: accessTokenParams,
@@ -290,10 +306,18 @@ func (a *TwitchAPI) doGQL(ctx context.Context, operationName, hash string, varia
 
 	slog.Debug("GQL fallback query", "operation", operationName)
 
+	sum := sha256.Sum256([]byte(queryText))
+	queryHash := hex.EncodeToString(sum[:])
 	fallbackBody := gqlFallbackRequest{
 		OperationName: operationName,
 		Query:         queryText,
-		Variables:     variables,
+		Extensions: gqlExtensions{
+			PersistedQuery: gqlPersistedQuery{
+				Version:    1,
+				SHA256Hash: queryHash,
+			},
+		},
+		Variables: variables,
 	}
 	bodyBytes, err := json.Marshal(fallbackBody)
 	if err != nil {
@@ -312,6 +336,8 @@ func (a *TwitchAPI) doGQLRoundTrip(ctx context.Context, bodyBytes []byte, extraH
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Client-ID", a.ClientID)
+	req.Header.Set("User-Agent", a.UserAgent)
+	req.Header.Set("X-Device-ID", a.DeviceID)
 
 	for k, v := range a.headers {
 		req.Header.Set(k, v)

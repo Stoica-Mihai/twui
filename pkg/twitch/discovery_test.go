@@ -2,8 +2,53 @@ package twitch
 
 import (
 	"context"
+	"net/http"
 	"testing"
 )
+
+// --- Live API tests ---
+// These make real HTTP calls to the Twitch GQL endpoint.
+// Run with: go test ./pkg/twitch/ -run TestLive
+// They are skipped under -short.
+
+func TestLive_BrowseCategories(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Twitch API test")
+	}
+	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
+	cats, next, err := api.BrowseCategories(context.Background(), 5, "")
+	if err != nil {
+		t.Fatalf("BrowseCategories: %v", err)
+	}
+	if len(cats) == 0 {
+		t.Fatal("expected at least one category, got none")
+	}
+	for _, c := range cats {
+		if c.Name == "" {
+			t.Errorf("category has empty name: %+v", c)
+		}
+		if c.ViewerCount <= 0 {
+			t.Errorf("category %q has non-positive viewer count: %d", c.Name, c.ViewerCount)
+		}
+	}
+	t.Logf("got %d categories, first: %q (%d viewers), nextCursor=%q",
+		len(cats), cats[0].Name, cats[0].ViewerCount, next)
+}
+
+func TestLive_SearchChannels(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Twitch API test")
+	}
+	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
+	results, err := api.SearchChannels(context.Background(), "starcraft", 5)
+	if err != nil {
+		t.Fatalf("SearchChannels: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one search result for 'starcraft'")
+	}
+	t.Logf("got %d results, first: %q", len(results), results[0].DisplayName)
+}
 
 // --- SearchChannels ---
 
@@ -118,7 +163,7 @@ func TestSearchChannels_NoStream(t *testing.T) {
 
 func TestBrowseCategories_Results(t *testing.T) {
 	api := newTestAPI(t, gqlOK(`{
-		"directoriesWithTags": {
+		"games": {
 			"edges": [
 				{
 					"cursor": "cursor1",
@@ -166,7 +211,7 @@ func TestBrowseCategories_Results(t *testing.T) {
 
 func TestBrowseCategories_HasNextPage(t *testing.T) {
 	api := newTestAPI(t, gqlOK(`{
-		"directoriesWithTags": {
+		"games": {
 			"edges": [
 				{
 					"cursor": "nextpagecursor",
@@ -188,7 +233,7 @@ func TestBrowseCategories_HasNextPage(t *testing.T) {
 
 func TestBrowseCategories_LastPage_ClearsNextCursor(t *testing.T) {
 	api := newTestAPI(t, gqlOK(`{
-		"directoriesWithTags": {
+		"games": {
 			"edges": [
 				{"cursor": "somecursor", "node": {"id": "1", "name": "Cat", "viewersCount": 0, "boxArtURL": ""}}
 			],
@@ -206,7 +251,7 @@ func TestBrowseCategories_LastPage_ClearsNextCursor(t *testing.T) {
 }
 
 func TestBrowseCategories_NilData(t *testing.T) {
-	api := newTestAPI(t, gqlOK(`{"directoriesWithTags": null}`))
+	api := newTestAPI(t, gqlOK(`{"games": null}`))
 
 	cats, next, err := api.BrowseCategories(context.Background(), 10, "")
 	if err != nil {

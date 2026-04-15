@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -100,6 +101,23 @@ func initConfig(cmd *cobra.Command) error {
 }
 
 func runTUI(cmd *cobra.Command, defaultQuality string) error {
+	// Redirect slog away from stderr before starting the TUI.
+	// Any slog output (from hls.go, api.go, etc.) would otherwise appear
+	// interleaved with Bubble Tea's terminal rendering.
+	var logDest io.Writer = io.Discard
+	if verbose {
+		cacheDir, err := os.UserCacheDir()
+		if err == nil {
+			logPath := filepath.Join(cacheDir, "twui", "debug.log")
+			_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+				logDest = f
+				defer f.Close()
+			}
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(logDest, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	sess := session.New()
 	defer sess.Close()
 
@@ -282,10 +300,12 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			send(ui.StatusPlaying, q)
 
 			p := &output.Player{
-				Path:    playerPath,
-				Args:    playerArgs,
-				Title:   fmt.Sprintf("%s — twui", channel),
-				NoClose: false,
+				Path:       playerPath,
+				Args:       playerArgs,
+				Title:      fmt.Sprintf("%s — twui", channel),
+				NoClose:    false,
+				NoTerminal: true,
+				Stderr:     io.Discard,
 			}
 
 			if err := p.Play(c, reader); err != nil {

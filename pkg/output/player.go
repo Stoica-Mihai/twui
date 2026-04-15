@@ -48,7 +48,7 @@ func (p *Player) Play(ctx context.Context, r io.ReadCloser) error {
 	args = append(args, p.Args...)
 
 	cmd := exec.Command(p.Path, args...)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = io.Discard
 	if p.Stderr != nil {
 		cmd.Stderr = p.Stderr
 	} else {
