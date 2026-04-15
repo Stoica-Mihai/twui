@@ -122,12 +122,8 @@ func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor stri
 	}
 
 	variables := map[string]any{
-		"limit":                  limit,
-		"options":                map[string]any{},
-		"sortTypeIsRecency":      false,
-		"freeformTagsEnabled":    false,
-		"isPaginationEnabled":    true,
-		"cursor":                 cursor,
+		"limit":  limit,
+		"cursor": cursor,
 	}
 
 	body, err := a.doGQL(ctx, "BrowsePage_AllDirectories", "", variables, nil)
@@ -335,8 +331,8 @@ func init() {
   }
 }`
 
-	fallbackQueries["BrowsePage_AllDirectories"] = `query BrowsePage_AllDirectories($limit: Int, $cursor: String, $options: DirectoryRowOptions, $sortTypeIsRecency: Boolean!, $freeformTagsEnabled: Boolean!, $isPaginationEnabled: Boolean!) {
-  directoriesWithTags(first: $limit, after: $cursor, options: $options) {
+	fallbackQueries["BrowsePage_AllDirectories"] = `query BrowsePage_AllDirectories($limit: Int, $cursor: String) {
+  directoriesWithTags(first: $limit, after: $cursor) {
     edges {
       cursor
       node {
