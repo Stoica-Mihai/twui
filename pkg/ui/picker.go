@@ -1286,7 +1286,6 @@ func waitPlayback(ctx context.Context, ch <-chan statusUpdateMsg, channel string
 
 // --- Overlay helpers ---
 
-// overlayHeader returns the 3-line header (top border, title, separator) for a boxed overlay.
 func (m Model) overlayHeader(title string, w int) []string {
 	return []string{
 		m.styles.border.Render("┌" + strings.Repeat("─", w) + "┐"),
@@ -1295,25 +1294,18 @@ func (m Model) overlayHeader(title string, w int) []string {
 	}
 }
 
-// overlayFooter returns the bottom border line for a boxed overlay.
 func (m Model) overlayFooter(w int) string {
 	return m.styles.border.Render("└" + strings.Repeat("─", w) + "┘")
 }
 
-// overlayRow wraps content in │ border characters.
 func (m Model) overlayRow(content string) string {
 	return m.styles.border.Render("│") + content + m.styles.border.Render("│")
 }
 
-// calcVisibleStart returns the first list index to render so that cursor is within [start, start+height).
+// calcVisibleStart returns the first row index to show so the cursor stays visible.
+// Keeps 1 header row + 1 padding row before the cursor becomes the bottom item.
 func calcVisibleStart(cursor, height int) int {
-	if cursor < height-2 {
-		return 0
-	}
-	if v := cursor - (height - 3); v > 0 {
-		return v
-	}
-	return 0
+	return max(0, cursor-(height-3))
 }
 
 // --- Formatting helpers ---

@@ -514,7 +514,6 @@ func extractTomlKey(key string) string {
 	return key
 }
 
-// atomicWriteFile writes content to path via a temp file + rename.
 func atomicWriteFile(path, content string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "twui-config-*.tmp")
 	if err != nil {
