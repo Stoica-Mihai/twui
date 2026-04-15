@@ -184,13 +184,14 @@ func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, li
 			"recommendationsContext": map[string]any{
 				"platform": "web",
 			},
-			"requestID": "",
+			"requestID":    "",
 			"freeformTags": nil,
 			"tags":         []any{},
 		},
-		"sortTypeIsRecency": false,
-		"limit":             limit,
-		"cursor":            cursor,
+		"limit": limit,
+	}
+	if cursor != "" {
+		variables["cursor"] = cursor
 	}
 
 	body, err := a.doGQL(ctx, "DirectoryPage_Game", "", variables, nil)
@@ -335,7 +336,7 @@ func init() {
   }
 }`
 
-	fallbackQueries["DirectoryPage_Game"] = `query DirectoryPage_Game($categoryName: String!, $options: StreamOptions, $sortTypeIsRecency: Boolean!, $limit: Int!, $cursor: String) {
+	fallbackQueries["DirectoryPage_Game"] = `query DirectoryPage_Game($categoryName: String!, $options: GameStreamOptions, $limit: Int!, $cursor: Cursor) {
   game(name: $categoryName) {
     id
     name

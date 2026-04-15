@@ -35,6 +35,31 @@ func TestLive_BrowseCategories(t *testing.T) {
 		len(cats), cats[0].Name, cats[0].ViewerCount, next)
 }
 
+func TestLive_CategoryStreams(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Twitch API test")
+	}
+	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
+	// Use "Just Chatting" — reliably has many live streams at any hour.
+	streams, next, err := api.CategoryStreams(context.Background(), "Just Chatting", 5, "")
+	if err != nil {
+		t.Fatalf("CategoryStreams: %v", err)
+	}
+	if len(streams) == 0 {
+		t.Fatal("expected at least one stream in Just Chatting, got none")
+	}
+	for _, s := range streams {
+		if s.Login == "" {
+			t.Errorf("stream has empty login: %+v", s)
+		}
+		if s.ViewerCount <= 0 {
+			t.Errorf("stream %q has non-positive viewer count: %d", s.Login, s.ViewerCount)
+		}
+	}
+	t.Logf("got %d streams, first: %q (%d viewers), nextCursor=%q",
+		len(streams), streams[0].DisplayName, streams[0].ViewerCount, next)
+}
+
 func TestLive_SearchChannels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Twitch API test")
