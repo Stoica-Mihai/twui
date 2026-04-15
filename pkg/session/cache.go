@@ -53,29 +53,7 @@ func NewCache() (*Cache, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cache: determine config dir: %w", err)
 	}
-
-	dir := filepath.Join(configDir, "twui")
-	path := filepath.Join(dir, "cache.json")
-
-	c := &Cache{
-		path: path,
-		data: make(map[string]CacheEntry),
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return c, nil
-		}
-		return nil, fmt.Errorf("cache: read %s: %w", path, err)
-	}
-
-	if err := json.Unmarshal(raw, &c.data); err != nil {
-		// Corrupted cache file -- start fresh rather than failing.
-		c.data = make(map[string]CacheEntry)
-	}
-
-	return c, nil
+	return NewCacheAt(filepath.Join(configDir, "twui", "cache.json"))
 }
 
 // Get deserializes the cached value for key into dst. It returns false

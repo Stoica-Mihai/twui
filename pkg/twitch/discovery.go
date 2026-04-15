@@ -33,11 +33,17 @@ type HostResult struct {
 	DisplayName string
 }
 
+const (
+	defaultSearchLimit = 20
+	defaultBrowseLimit = 30
+	defaultStreamLimit = 30
+)
+
 // SearchChannels searches for live channels matching query.
 // Returns up to limit results (Twitch default/max ~20).
 func (a *TwitchAPI) SearchChannels(ctx context.Context, query string, limit int) ([]ChannelResult, error) {
 	if limit <= 0 {
-		limit = 20
+		limit = defaultSearchLimit
 	}
 
 	variables := map[string]any{
@@ -91,11 +97,7 @@ func (a *TwitchAPI) SearchChannels(ctx context.Context, query string, limit int)
 		if item.Stream != nil {
 			r.Title = item.Stream.Title
 			r.ViewerCount = item.Stream.ViewersCount
-			if item.Stream.CreatedAt != "" {
-				if t, err := time.Parse(time.RFC3339, item.Stream.CreatedAt); err == nil {
-					r.StartedAt = t
-				}
-			}
+			r.StartedAt = parseRFC3339(item.Stream.CreatedAt)
 			if item.Stream.Game != nil {
 				r.Category = item.Stream.Game.Name
 			}
@@ -110,7 +112,7 @@ func (a *TwitchAPI) SearchChannels(ctx context.Context, query string, limit int)
 // cursor is empty on first call; pass the returned cursor for pagination.
 func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor string) ([]CategoryResult, string, error) {
 	if limit <= 0 {
-		limit = 30
+		limit = defaultBrowseLimit
 	}
 
 	variables := map[string]any{
@@ -172,7 +174,7 @@ func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor stri
 // cursor is empty on first call; returns next cursor for pagination.
 func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, limit int, cursor string) ([]ChannelResult, string, error) {
 	if limit <= 0 {
-		limit = 30
+		limit = defaultStreamLimit
 	}
 
 	variables := map[string]any{
@@ -243,11 +245,7 @@ func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, li
 			Title:       node.Title,
 			ViewerCount: node.ViewersCount,
 		}
-		if node.CreatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, node.CreatedAt); err == nil {
-				r.StartedAt = t
-			}
-		}
+		r.StartedAt = parseRFC3339(node.CreatedAt)
 		if node.Game != nil {
 			r.Category = node.Game.Name
 		}

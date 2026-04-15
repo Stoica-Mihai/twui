@@ -254,11 +254,7 @@ func (a *TwitchAPI) StreamMetadata(ctx context.Context, channel string) (*Metada
 			md.Title = data.User.Stream.Title
 		}
 		md.ViewerCount = data.User.Stream.ViewersCount
-		if data.User.Stream.CreatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, data.User.Stream.CreatedAt); err == nil {
-				md.StartedAt = t
-			}
-		}
+		md.StartedAt = parseRFC3339(data.User.Stream.CreatedAt)
 		if data.User.Stream.Game != nil {
 			md.Category = data.User.Stream.Game.Name
 		}
@@ -403,6 +399,15 @@ func isPersistedQueryNotFound(err error) bool {
 		return false
 	}
 	return strings.Contains(gqlErr.Message, "PersistedQueryNotFound")
+}
+
+// parseRFC3339 parses an RFC3339 timestamp, returning zero time on empty or invalid input.
+func parseRFC3339(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, _ := time.Parse(time.RFC3339, s)
+	return t
 }
 
 func parseGQLRetryAfter(header string) time.Duration {

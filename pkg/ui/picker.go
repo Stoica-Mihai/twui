@@ -32,6 +32,15 @@ const (
 	overlayRelated             // related/host channels
 )
 
+// Timeout and debounce constants for async operations.
+const (
+	timeoutRelated = 10 * time.Second
+	timeoutQuality = 15 * time.Second
+	timeoutSearch  = 15 * time.Second
+	timeoutBrowse  = 30 * time.Second
+	debounceSearch = 400 * time.Millisecond
+)
+
 // internal Bubble Tea messages
 type (
 	watchListResultMsg struct {
@@ -387,16 +396,10 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 	)
 
 	lines := []string{header}
-	visibleStart := 0
-	if m.cursor >= height-2 {
-		visibleStart = m.cursor - (height - 3)
-	}
-	if visibleStart < 0 {
-		visibleStart = 0
-	}
+	start := calcVisibleStart(m.cursor, height)
 
 	for i, e := range entries {
-		if i < visibleStart {
+		if i < start {
 			continue
 		}
 		if len(lines) >= height {
@@ -484,14 +487,10 @@ func (m Model) renderCategoryList(entries []DiscoveryEntry, height int) []string
 
 	header := m.styles.title.Render(pad("Category", colName) + pad("Viewers", colViewers))
 	lines := []string{header}
-
-	visibleStart := 0
-	if m.cursor >= height-2 {
-		visibleStart = m.cursor - (height - 3)
-	}
+	start := calcVisibleStart(m.cursor, height)
 
 	for i, e := range entries {
-		if i < visibleStart {
+		if i < start {
 			continue
 		}
 		if len(lines) >= height {
@@ -565,38 +564,30 @@ func (m Model) renderOverlay() string {
 func (m Model) renderQualityOverlay() string {
 	title := fmt.Sprintf(" Quality — %s ", m.overlayChannel)
 	w := len(title)
-	lines := []string{
-		m.styles.border.Render("┌" + strings.Repeat("─", w) + "┐"),
-		m.styles.border.Render("│") + m.styles.title.Render(title) + m.styles.border.Render("│"),
-		m.styles.border.Render("├" + strings.Repeat("─", w) + "┤"),
-	}
+	lines := m.overlayHeader(title, w)
 	for i, q := range m.overlayList {
 		row := fmt.Sprintf("  %-*s  ", w-4, q)
 		if i == m.overlayCursor {
 			row = m.styles.selected.Render(row)
 		}
-		lines = append(lines, m.styles.border.Render("│")+row+m.styles.border.Render("│"))
+		lines = append(lines, m.overlayRow(row))
 	}
-	lines = append(lines, m.styles.border.Render("└"+strings.Repeat("─", w)+"┘"))
+	lines = append(lines, m.overlayFooter(w))
 	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderThemeOverlay() string {
 	w := 30
 	title := " Theme Picker "
-	lines := []string{
-		m.styles.border.Render("┌" + strings.Repeat("─", w) + "┐"),
-		m.styles.border.Render("│") + m.styles.title.Render(pad(title, w)) + m.styles.border.Render("│"),
-		m.styles.border.Render("├" + strings.Repeat("─", w) + "┤"),
-	}
+	lines := m.overlayHeader(title, w)
 	for i, p := range Presets {
 		row := fmt.Sprintf("  %-*s  ", w-4, p.Name)
 		if i == m.themeIdx {
 			row = m.styles.selected.Render(row)
 		}
-		lines = append(lines, m.styles.border.Render("│")+row+m.styles.border.Render("│"))
+		lines = append(lines, m.overlayRow(row))
 	}
-	lines = append(lines, m.styles.border.Render("└"+strings.Repeat("─", w)+"┘"))
+	lines = append(lines, m.overlayFooter(w))
 	return strings.Join(lines, "\n")
 }
 
@@ -608,14 +599,10 @@ func (m Model) renderIgnoredList(height int) []string {
 
 	header := m.styles.title.Render(pad("  Ignored Channel", m.width-2))
 	lines := []string{header}
-
-	visibleStart := 0
-	if m.cursor >= height-2 {
-		visibleStart = m.cursor - (height - 3)
-	}
+	start := calcVisibleStart(m.cursor, height)
 
 	for i, ch := range ignored {
-		if i < visibleStart {
+		if i < start {
 			continue
 		}
 		if len(lines) >= height {
@@ -639,28 +626,21 @@ func (m Model) renderRelatedOverlay() string {
 	if len(title) > w {
 		w = len(title)
 	}
-	lines := []string{
-		m.styles.border.Render("┌" + strings.Repeat("─", w) + "┐"),
-		m.styles.border.Render("│") + m.styles.title.Render(pad(title, w)) + m.styles.border.Render("│"),
-		m.styles.border.Render("├" + strings.Repeat("─", w) + "┤"),
-	}
+	lines := m.overlayHeader(title, w)
 	if m.relatedLoading {
-		row := pad("  Loading...", w)
-		lines = append(lines, m.styles.border.Render("│")+m.styles.text.Render(row)+m.styles.border.Render("│"))
+		lines = append(lines, m.overlayRow(m.styles.text.Render(pad("  Loading...", w))))
 	} else if len(m.relatedHosts) == 0 {
-		row := pad("  Not hosting anyone.", w)
-		lines = append(lines, m.styles.border.Render("│")+m.styles.text.Render(row)+m.styles.border.Render("│"))
+		lines = append(lines, m.overlayRow(m.styles.text.Render(pad("  Not hosting anyone.", w))))
 	} else {
 		for _, h := range m.relatedHosts {
 			name := h.DisplayName
 			if name == "" {
 				name = h.Login
 			}
-			row := pad("  "+name, w)
-			lines = append(lines, m.styles.border.Render("│")+m.styles.live.Render(row)+m.styles.border.Render("│"))
+			lines = append(lines, m.overlayRow(m.styles.live.Render(pad("  "+name, w))))
 		}
 	}
-	lines = append(lines, m.styles.border.Render("└"+strings.Repeat("─", w)+"┘"))
+	lines = append(lines, m.overlayFooter(w))
 	return strings.Join(lines, "\n")
 }
 
@@ -682,17 +662,11 @@ func (m Model) renderHelpOverlay() string {
 		{"q / Ctrl+C", "Quit"},
 	}
 	w := 50
-	lines := []string{
-		m.styles.border.Render("┌" + strings.Repeat("─", w) + "┐"),
-		m.styles.border.Render("│") + m.styles.title.Render(pad(" Keyboard Shortcuts", w)) + m.styles.border.Render("│"),
-		m.styles.border.Render("├" + strings.Repeat("─", w) + "┤"),
-	}
+	lines := m.overlayHeader(" Keyboard Shortcuts", w)
 	for _, kv := range keys {
-		row := fmt.Sprintf("  %-22s %s", kv[0], kv[1])
-		lines = append(lines,
-			m.styles.border.Render("│")+pad(row, w)+m.styles.border.Render("│"))
+		lines = append(lines, m.overlayRow(pad(fmt.Sprintf("  %-22s %s", kv[0], kv[1]), w)))
 	}
-	lines = append(lines, m.styles.border.Render("└"+strings.Repeat("─", w)+"┘"))
+	lines = append(lines, m.overlayFooter(w))
 	return strings.Join(lines, "\n")
 }
 
@@ -866,7 +840,7 @@ func (m Model) handleRelated() (tea.Model, tea.Cmd) {
 	ctx := m.ctx
 	fns := m.fns
 	return m, func() tea.Msg {
-		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		c, cancel := context.WithTimeout(ctx, timeoutRelated)
 		defer cancel()
 		hosts, err := fns.HostingChannels(c, ch)
 		return relatedResultMsg{channel: ch, hosts: hosts, err: err}
@@ -1064,7 +1038,7 @@ func (m Model) handleQualityPicker() (tea.Model, tea.Cmd) {
 	ctx := m.ctx
 	fns := m.fns
 	return m, func() tea.Msg {
-		c, cancel := context.WithTimeout(ctx, 15*time.Second)
+		c, cancel := context.WithTimeout(ctx, timeoutQuality)
 		defer cancel()
 		qualities, err := fns.Streams(c, ch)
 		return qualityResultMsg{channel: ch, qualities: qualities, err: err}
@@ -1182,7 +1156,7 @@ func (m Model) loadWatchList() tea.Cmd {
 	ctx := m.ctx
 	fns := m.fns
 	return func() tea.Msg {
-		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c, cancel := context.WithTimeout(ctx, timeoutBrowse)
 		defer cancel()
 		entries, err := fns.WatchList(c)
 		return watchListResultMsg{entries: entries, err: err}
@@ -1194,7 +1168,7 @@ func (m Model) loadBrowse() tea.Cmd {
 	ctx := m.ctx
 	fns := m.fns
 	return func() tea.Msg {
-		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c, cancel := context.WithTimeout(ctx, timeoutBrowse)
 		defer cancel()
 		entries, next, err := fns.BrowseCategories(c, "")
 		return browseResultMsg{entries: entries, nextCursor: next, err: err}
@@ -1205,7 +1179,7 @@ func (m Model) loadCategoryStreams(category, cursor string, appendMode bool) tea
 	ctx := m.ctx
 	fns := m.fns
 	return func() tea.Msg {
-		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c, cancel := context.WithTimeout(ctx, timeoutBrowse)
 		defer cancel()
 		entries, next, err := fns.CategoryStreams(c, category, cursor)
 		return categoryStreamsResultMsg{
@@ -1241,7 +1215,7 @@ func (m Model) runSearch(query string) tea.Cmd {
 	ctx := m.ctx
 	fns := m.fns
 	return func() tea.Msg {
-		c, cancel := context.WithTimeout(ctx, 15*time.Second)
+		c, cancel := context.WithTimeout(ctx, timeoutSearch)
 		defer cancel()
 		entries, err := fns.Search(c, query)
 		return searchResultMsg{query: query, entries: entries, err: err}
@@ -1249,7 +1223,7 @@ func (m Model) runSearch(query string) tea.Cmd {
 }
 
 func (m Model) debounceSearch(query string) tea.Cmd {
-	return tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(debounceSearch, func(time.Time) tea.Msg {
 		return searchDebounceMsg{query: query}
 	})
 }
@@ -1308,6 +1282,38 @@ func waitPlayback(ctx context.Context, ch <-chan statusUpdateMsg, channel string
 			return statusUpdateMsg{channel: channel, done: true, gen: gen}
 		}
 	}
+}
+
+// --- Overlay helpers ---
+
+// overlayHeader returns the 3-line header (top border, title, separator) for a boxed overlay.
+func (m Model) overlayHeader(title string, w int) []string {
+	return []string{
+		m.styles.border.Render("┌" + strings.Repeat("─", w) + "┐"),
+		m.styles.border.Render("│") + m.styles.title.Render(pad(title, w)) + m.styles.border.Render("│"),
+		m.styles.border.Render("├" + strings.Repeat("─", w) + "┤"),
+	}
+}
+
+// overlayFooter returns the bottom border line for a boxed overlay.
+func (m Model) overlayFooter(w int) string {
+	return m.styles.border.Render("└" + strings.Repeat("─", w) + "┘")
+}
+
+// overlayRow wraps content in │ border characters.
+func (m Model) overlayRow(content string) string {
+	return m.styles.border.Render("│") + content + m.styles.border.Render("│")
+}
+
+// calcVisibleStart returns the first list index to render so that cursor is within [start, start+height).
+func calcVisibleStart(cursor, height int) int {
+	if cursor < height-2 {
+		return 0
+	}
+	if v := cursor - (height - 3); v > 0 {
+		return v
+	}
+	return 0
 }
 
 // --- Formatting helpers ---

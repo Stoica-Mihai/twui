@@ -493,18 +493,53 @@ func streamWeight(name string) float64 {
 	return 1 - altPenalty
 }
 
+// resolveConfigFile returns the config file path, creating the directory if needed.
+func resolveConfigFile() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(configDir, "twui")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.toml"), nil
+}
+
+// extractTomlKey returns the last dotted segment of a "section.key" config key.
+func extractTomlKey(key string) string {
+	if _, after, ok := strings.Cut(key, "."); ok {
+		return after
+	}
+	return key
+}
+
+// atomicWriteFile writes content to path via a temp file + rename.
+func atomicWriteFile(path, content string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "twui-config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	tmp.Close()
+	return os.Rename(tmpName, path)
+}
+
 // writeConfigString persists a single string config value to the config file.
 func writeConfigString(key, value string) {
 	viper.Set(key, value)
 	configFile := viper.ConfigFileUsed()
 	if configFile == "" {
-		configDir, err := os.UserConfigDir()
+		var err error
+		configFile, err = resolveConfigFile()
 		if err != nil {
 			return
 		}
-		dir := filepath.Join(configDir, "twui")
-		_ = os.MkdirAll(dir, 0700)
-		configFile = filepath.Join(dir, "config.toml")
 		viper.SetConfigFile(configFile)
 	}
 	if err := writeConfigStringKey(configFile, key, value); err != nil {
@@ -519,13 +554,7 @@ func writeConfigStringKey(path, key, value string) error {
 		return err
 	}
 
-	parts := strings.SplitN(key, ".", 2)
-	var tomlKey string
-	if len(parts) == 2 {
-		tomlKey = parts[1]
-	} else {
-		tomlKey = key
-	}
+	tomlKey := extractTomlKey(key)
 
 	newLine := fmt.Sprintf("%s = %q", tomlKey, value)
 	lines := strings.Split(string(raw), "\n")
@@ -542,19 +571,7 @@ func writeConfigStringKey(path, key, value string) error {
 		lines = append(lines, fmt.Sprintf("%s = %q", key, value))
 	}
 
-	content := strings.Join(lines, "\n")
-	tmp, err := os.CreateTemp(filepath.Dir(path), "twui-config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	tmp.Close()
-	return os.Rename(tmpName, path)
+	return atomicWriteFile(path, strings.Join(lines, "\n"))
 }
 
 // writeConfigList persists a config list value to the config file.
@@ -562,13 +579,11 @@ func writeConfigList(key string, values []string) {
 	viper.Set(key, values)
 	configFile := viper.ConfigFileUsed()
 	if configFile == "" {
-		configDir, err := os.UserConfigDir()
+		var err error
+		configFile, err = resolveConfigFile()
 		if err != nil {
 			return
 		}
-		dir := filepath.Join(configDir, "twui")
-		_ = os.MkdirAll(dir, 0700)
-		configFile = filepath.Join(dir, "config.toml")
 		viper.SetConfigFile(configFile)
 	}
 	if err := writeConfigKey(configFile, key, values); err != nil {
@@ -584,21 +599,11 @@ func writeConfigKey(path, key string, values []string) error {
 		return err
 	}
 
-	// Build new value string
 	quoted := make([]string, len(values))
 	for i, v := range values {
 		quoted[i] = fmt.Sprintf("%q", v)
 	}
-	newLine := fmt.Sprintf("%s = [%s]", key, strings.Join(quoted, ", "))
-
-	// Find the last dotted part as the TOML key
-	parts := strings.SplitN(key, ".", 2)
-	var tomlKey string
-	if len(parts) == 2 {
-		tomlKey = parts[1]
-	} else {
-		tomlKey = key
-	}
+	tomlKey := extractTomlKey(key)
 
 	lines := strings.Split(string(raw), "\n")
 	found := false
@@ -610,29 +615,11 @@ func writeConfigKey(path, key string, values []string) error {
 			break
 		}
 	}
-
 	if !found {
-		// Append under section header or at end
-		lines = append(lines, newLine)
+		lines = append(lines, fmt.Sprintf("%s = [%s]", key, strings.Join(quoted, ", ")))
 	}
 
-	content := strings.Join(lines, "\n")
-	_ = newLine // already used above
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), "twui-config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	tmp.Close()
-
-	return os.Rename(tmpName, path)
+	return atomicWriteFile(path, strings.Join(lines, "\n"))
 }
 
 func toSet(list []string) map[string]bool {
