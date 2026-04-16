@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 	"github.com/rivo/uniseg"
 )
 
@@ -359,7 +361,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case titleScrollMsg:
 		if e := m.currentEntry(); e != nil && e.IsLive && e.Title != "" {
 			title := sanitizeText(e.Title)
-			titleW := m.width - 54 // colFixed from renderChannelList
+			titleW := m.width - 2 - 56 // colFixed from renderChannelList
 			if titleW < 1 {
 				titleW = 1
 			}
@@ -414,26 +416,33 @@ func (m Model) render() string {
 		return ""
 	}
 
-	var sb strings.Builder
-
-	sb.WriteString(m.renderTabBar())
-	sb.WriteString("\n")
-	sb.WriteString(m.styles.border.Render(strings.Repeat("─", m.width)))
-	sb.WriteString("\n")
-
-	bodyHeight := m.height - 4
+	// The outer frame is a 3-row lipgloss table: tab bar, body, footer.
+	// The body itself is plain text lines (channel/category/ignored tables render their own content).
+	bodyHeight := m.height - 6 // top border + tab + separator + separator + footer + bottom border
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
 
-	body := m.renderBody(bodyHeight)
-	sb.WriteString(body)
+	bodyStr := m.renderBody(bodyHeight)
+	// Ensure body fills exactly bodyHeight lines.
+	bodyLines := strings.Split(bodyStr, "\n")
+	for len(bodyLines) < bodyHeight {
+		bodyLines = append(bodyLines, "")
+	}
+	bodyStr = strings.Join(bodyLines[:bodyHeight], "\n")
 
-	sb.WriteString(m.styles.border.Render(strings.Repeat("─", m.width)))
-	sb.WriteString("\n")
-	sb.WriteString(m.renderFooter())
+	frame := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(m.styles.border).
+		BorderColumn(false).
+		BorderRow(true).
+		BorderHeader(false).
+		Width(m.width).
+		Row(m.renderTabBar()).
+		Row(bodyStr).
+		Row(m.renderFooter())
 
-	result := sb.String()
+	result := frame.String()
 
 	if m.overlay != overlayNone {
 		return overlayOn(result, m.renderOverlay(), m.width, m.height)
@@ -463,7 +472,15 @@ func (m Model) renderTabBar() string {
 		}
 	}
 
-	return strings.Join(parts, m.styles.border.Render("│"))
+	result := strings.Join(parts, m.styles.text.Render(" · "))
+	if m.refreshInterval > 0 {
+		if m.refreshing {
+			result += m.styles.text.Render("  ↻ refreshing…")
+		} else {
+			result += m.styles.text.Render(fmt.Sprintf("  ↻ %s", m.refreshCountdown.Truncate(time.Second)))
+		}
+	}
+	return result
 }
 
 func (m Model) renderBody(height int) string {
@@ -503,17 +520,18 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 
 	// Column widths; 4 separators of 2 spaces each between the 5 data columns.
 	// Prefix: status(1) + sp(1) + fav(1) + sp(1) = 4
-	// Fixed total: 4 + 16 + 2 + 6 + 2 + 6 + 2 + 14 + 2 = 54; title gets the rest.
+	// Order: Channel · Category · Title(flex) · Viewers · Uptime
+	// Fixed total: 4 + 16 + 2 + 14 + 2 + 2 + 7 + 2 + 7 = 56; title gets the rest.
 	const (
 		colStatus   = 2
 		colFav      = 2
 		colChannel  = 16
-		colViewers  = 6
-		colUptime   = 6
+		colViewers  = 7 // fits "Viewers" header (7 chars)
+		colUptime   = 7 // fits "0h 52m" / "12h 30m"
 		colCategory = 14
-		colFixed    = 54
+		colFixed    = 56
 	)
-	colTitle := m.width - colFixed
+	colTitle := m.width - 2 - colFixed
 	if colTitle < 10 {
 		colTitle = 10
 	}
@@ -521,14 +539,15 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 	header := m.styles.title.Render(
 		strings.Repeat(" ", colStatus+colFav) +
 			pad("Channel", colChannel) + "  " +
-			pad("Viewers", colViewers) + "  " +
-			pad("Uptime", colUptime) + "  " +
 			pad("Category", colCategory) + "  " +
-			pad("Title", colTitle),
+			pad("Title", colTitle) + "  " +
+			pad("Viewers", colViewers) + "  " +
+			pad("Uptime", colUptime),
 	)
+	sep := m.styles.border.Render(strings.Repeat("─", m.width-2))
 
-	lines := []string{header}
-	start := calcVisibleStart(m.cursor, height)
+	lines := []string{header, sep}
+	start := calcVisibleStart(m.cursor, height-1) // -1 for separator
 
 	for i, e := range entries {
 		if i < start {
@@ -541,7 +560,7 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 		selected := i == m.cursor
 
 		if e.Kind == EntryLoadMore {
-			label := padRight("  ↓  Load more  (Enter)", m.width)
+			label := padRight("  ↓  Load more  (Enter)", m.width - 2)
 			if selected {
 				lines = append(lines, m.styles.selected.Render(label))
 			} else {
@@ -585,11 +604,15 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 			uptimeStr = formatUptime(time.Since(e.StartedAt))
 		}
 
-		catStr := pad(cellTruncate(e.Category, colCategory), colCategory)
+		cat := e.Category
+		if !e.IsLive {
+			cat = "—"
+		}
+		catStr := pad(cellTruncate(cat, colCategory), colCategory)
 
 		var titleStr string
 		if !e.IsLive {
-			titleStr = padRight("(offline)", colTitle)
+			titleStr = padRight("offline", colTitle)
 		} else if e.IsLive && e.Title != "" {
 			title := sanitizeText(e.Title)
 			if uniseg.StringWidth(title) <= colTitle {
@@ -625,10 +648,11 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 		row := padRight(
 			statusCh+" "+favCh+" "+
 				pad(chanStr, colChannel)+"  "+
+				catStr+"  "+
+				titleStr+"  "+
 				pad(viewStr, colViewers)+"  "+
-				pad(uptimeStr, colUptime)+"  "+
-				catStr+"  "+titleStr,
-			m.width,
+				pad(uptimeStr, colUptime),
+			m.width - 2,
 		)
 
 		switch {
@@ -656,14 +680,15 @@ func (m Model) renderCategoryList(entries []DiscoveryEntry, height int) []string
 	}
 
 	colViewers := 10
-	colName := m.width - colViewers - 2
+	colName := m.width - 2 - colViewers - 2
 	if colName < 10 {
 		colName = 10
 	}
 
 	header := m.styles.title.Render(pad("Category", colName) + pad("Viewers", colViewers))
-	lines := []string{header}
-	start := calcVisibleStart(m.cursor, height)
+	sep := m.styles.border.Render(strings.Repeat("─", m.width-2))
+	lines := []string{header, sep}
+	start := calcVisibleStart(m.cursor, height-1)
 
 	for i, e := range entries {
 		if i < start {
@@ -681,7 +706,7 @@ func (m Model) renderCategoryList(entries []DiscoveryEntry, height int) []string
 			m.styles.text.Render(pad(viewStr, colViewers))
 
 		if selected {
-			row = m.styles.selected.Render(padRight(stripANSI(row), m.width))
+			row = m.styles.selected.Render(padRight(stripANSI(row), m.width - 2))
 		}
 
 		lines = append(lines, row)
@@ -712,18 +737,73 @@ func (m Model) renderSearchView(height int) []string {
 
 func (m Model) renderFooter() string {
 	if m.notice != "" {
-		return m.styles.live.Render(cellTruncate("  "+m.notice, m.width))
+		return m.styles.live.Render(cellTruncate("  "+m.notice, m.width - 2))
 	}
-	var hints string
+
+	hint := func(key, desc string) string {
+		return m.styles.title.Render(key) + " " + m.styles.text.Render(desc)
+	}
+	dot := m.styles.text.Render(" · ")
+
+	// Left side.
+	var left string
 	switch {
 	case m.mode == viewModeSearch && m.searching:
-		hints = "  Type to search  Enter: confirm  Esc: cancel"
+		left = "  " + hint("Enter", "confirm") + dot + hint("Esc", "cancel")
 	case m.mode == viewModeBrowse && len(m.categoryStack) > 0:
-		hints = "  Esc: back  " + strings.Join(m.categoryStack, " › ")
+		left = "  " + hint("Esc", "back") + m.styles.text.Render("  "+strings.Join(m.categoryStack, " › "))
 	default:
-		hints = "  Tab: switch  j/k: nav  Enter: open  f: fav  x: ignore  i: quality  t: theme  ?: help  q: quit"
+		live, offline := m.countLiveOffline()
+		left = fmt.Sprintf("  %d live · %d offline", live, offline)
 	}
-	return m.styles.text.Render(cellTruncate(hints, m.width))
+
+	// Right side.
+	var right string
+	switch {
+	default:
+		parts := []string{
+			hint("Enter", "play"),
+			hint("i", "quality"),
+			hint("f", "fav"),
+			hint("x", "ignore"),
+			hint("r", "related"),
+			hint("t", "theme"),
+		}
+		right = strings.Join(parts, dot) + "  "
+	}
+
+	// Pad between left and right.
+	leftW := uniseg.StringWidth(stripANSI(left))
+	rightW := uniseg.StringWidth(stripANSI(right))
+	if gap := m.width - 2 - leftW - rightW; gap > 0 {
+		return left + strings.Repeat(" ", gap) + right
+	}
+	return left + "  " + right
+}
+
+// countLiveOffline counts live and offline channel entries in the current view.
+func (m Model) countLiveOffline() (int, int) {
+	var entries []DiscoveryEntry
+	switch m.mode {
+	case viewModeWatchList:
+		entries = m.watchList
+	case viewModeBrowse:
+		entries = m.categoryList
+	case viewModeSearch:
+		entries = m.searchList
+	}
+	live, offline := 0, 0
+	for _, e := range entries {
+		if e.Kind != EntryChannel {
+			continue
+		}
+		if e.IsLive {
+			live++
+		} else {
+			offline++
+		}
+	}
+	return live, offline
 }
 
 func (m Model) renderOverlay() string {
@@ -776,9 +856,10 @@ func (m Model) renderIgnoredList(height int) []string {
 		return []string{"  No ignored channels.  Press x on a channel in any view to ignore it."}
 	}
 
-	header := m.styles.title.Render(pad("  Ignored Channel", m.width-2))
-	lines := []string{header}
-	start := calcVisibleStart(m.cursor, height)
+	header := m.styles.title.Render(pad("  Ignored Channel", m.width-2-2))
+	sep := m.styles.border.Render(strings.Repeat("─", m.width-2))
+	lines := []string{header, sep}
+	start := calcVisibleStart(m.cursor, height-1)
 
 	for i, ch := range ignored {
 		if i < start {
@@ -790,7 +871,7 @@ func (m Model) renderIgnoredList(height int) []string {
 		selected := i == m.cursor
 		row := "  " + ch
 		if selected {
-			row = m.styles.selected.Render(padRight(row, m.width))
+			row = m.styles.selected.Render(padRight(row, m.width - 2))
 		} else {
 			row = m.styles.offline.Render(row)
 		}
@@ -837,6 +918,7 @@ func (m Model) renderHelpOverlay() string {
 		{"i", "Quality picker"},
 		{"t", "Theme picker"},
 		{"r", "Related/host channels"},
+		{"R", "Manual refresh"},
 		{"?", "Toggle help"},
 		{"q / Ctrl+C", "Quit"},
 	}
@@ -963,6 +1045,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		return m.handleRelated()
+
+	case "R":
+		if m.refreshInterval > 0 && !m.refreshing {
+			m.refreshCountdown = m.refreshInterval
+			m.refreshing = true
+			if cmd := m.refreshCurrentView(); cmd != nil {
+				return m, cmd
+			}
+		}
+		return m, nil
 
 	case "/":
 		if m.mode != viewModeSearch {
@@ -1690,10 +1782,7 @@ func formatViewers(n int) string {
 func formatUptime(d time.Duration) string {
 	h := int(d.Hours())
 	m2 := int(d.Minutes()) % 60
-	if h > 0 {
-		return fmt.Sprintf("%dh%02dm", h, m2)
-	}
-	return fmt.Sprintf("%dm", m2)
+	return fmt.Sprintf("%dh %02dm", h, m2)
 }
 
 // overlayOn centers overlay content on top of the base string.
@@ -1720,17 +1809,13 @@ func overlayOn(base, overlay string, width, height int) string {
 	result := make([]string, len(baseLines))
 	copy(result, baseLines)
 
-	prefix := strings.Repeat(" ", leftPad)
+	pad := strings.Repeat(" ", leftPad)
 	for i, ol := range overlayLines {
 		row := topPad + i
 		if row < 0 || row >= len(result) {
 			continue
 		}
-		bl := []rune(result[row])
-		for len(bl) < leftPad {
-			bl = append(bl, ' ')
-		}
-		result[row] = string(bl[:leftPad]) + prefix + ol
+		result[row] = pad + ol
 	}
 
 	return strings.Join(result, "\n")
