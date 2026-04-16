@@ -66,6 +66,23 @@ func init() {
 	rootCmd.PersistentFlags().StringSlice("player-args", nil, "Extra arguments for the media player")
 	rootCmd.PersistentFlags().Bool("low-latency", false, "Enable Twitch low-latency mode")
 	rootCmd.PersistentFlags().String("refresh", "", "Auto-refresh interval (e.g. 30s, 1m, 2m30s; 0 = off)")
+	rootCmd.PersistentFlags().Bool("ascii", false, "Use ASCII-only glyphs (auto-enabled for TERM=linux or TWUI_ASCII)")
+}
+
+// useASCIISymbols reports whether the TUI should render ASCII-only glyphs.
+// True when --ascii is passed, TWUI_ASCII is set to a non-empty value, or
+// TERM is "linux" (the kernel VT, which lacks a Unicode font).
+func useASCIISymbols(cmd *cobra.Command) bool {
+	if v, err := cmd.Root().PersistentFlags().GetBool("ascii"); err == nil && v {
+		return true
+	}
+	if os.Getenv("TWUI_ASCII") != "" {
+		return true
+	}
+	if os.Getenv("TERM") == "linux" {
+		return true
+	}
+	return false
 }
 
 func initConfig(cmd *cobra.Command) error {
@@ -147,6 +164,11 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	theme := ui.ThemeByName(themeName)
 	// Apply hex overrides
 	applyHexOverrides(&theme)
+	// Honor the NO_COLOR convention (https://no-color.org/). Any non-empty value
+	// disables colors regardless of theme; not persisted to config.
+	if os.Getenv("NO_COLOR") != "" {
+		theme.Monochrome = true
+	}
 
 	// Load favorites and ignored
 	favorites := viper.GetStringSlice("twitch.channels")
@@ -274,7 +296,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			return sortedStreamNames(streams), nil
 		},
 
-		Launch: func(c context.Context, channel, quality, avatarURL string, send func(ui.Status, string)) {
+		Launch: func(c context.Context, channel, quality, avatarURL string, send func(ui.Status, string), notice func(string)) {
 			send(ui.StatusWaiting, "")
 
 			// Download avatar concurrently — don't block stream launch.
@@ -295,23 +317,29 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				return
 			}
 
-			q := quality
-			if q == "" {
-				q = defaultQuality
+			// requested is what the user asked for (via CLI arg, env, quality
+			// picker overlay, or config); empty means "pick best available".
+			requested := quality
+			if requested == "" {
+				requested = defaultQuality
 			}
+			q := requested
 			if q == "" {
 				q = selectBestQuality(streams)
 			}
 
 			s, ok := streams[q]
 			if !ok {
-				// Fallback to best
+				// Fallback to best.
 				q = selectBestQuality(streams)
 				s, ok = streams[q]
 				if !ok {
 					slog.Error("No stream available", "channel", channel)
 					return
 				}
+			}
+			if requested != "" && requested != q {
+				notice(fmt.Sprintf("%s unavailable — using %s", requested, q))
 			}
 
 			// Wire up notification hooks before opening.
@@ -423,6 +451,9 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	}
 
 	model := ui.NewModel(fns, theme, refreshInterval)
+	if useASCIISymbols(cmd) {
+		model.SetSymbols(ui.ASCIISymbols())
+	}
 	p := tea.NewProgram(model)
 
 	if _, err := p.Run(); err != nil {

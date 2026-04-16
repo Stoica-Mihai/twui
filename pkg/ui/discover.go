@@ -55,9 +55,11 @@ type DiscoveryFuncs struct {
 	// Streams fetches available quality names for a channel.
 	Streams func(ctx context.Context, channel string) ([]string, error)
 
-	// Launch starts playback for channel at quality. send reports status updates.
-	// avatarURL is the channel's profile image URL for notification icons (may be empty).
-	Launch func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string))
+	// Launch starts playback for channel at quality. send reports status updates;
+	// notice pushes a transient one-line footer message (e.g. "1080p60 unavailable
+	// — using 720p60"). avatarURL is the channel's profile image URL for
+	// notification icons (may be empty).
+	Launch func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string), notice func(string))
 
 	// ToggleFavorite adds or removes a channel from favorites.
 	ToggleFavorite func(channel string, add bool)

@@ -90,8 +90,11 @@ type (
 		channel string
 		status  Status
 		detail  string
-		gen     int
-		done    bool
+		// notice is a transient footer message; when set, the status/detail
+		// fields are ignored and only m.notice is updated.
+		notice string
+		gen    int
+		done   bool
 	}
 )
 
@@ -113,9 +116,10 @@ type Model struct {
 	width, height int
 
 	// view state
-	mode   viewMode
-	cursor int
-	styles pickerStyles
+	mode    viewMode
+	cursor  int
+	styles  pickerStyles
+	symbols Symbols
 
 	// data per view
 	watchList  []DiscoveryEntry
@@ -171,12 +175,19 @@ func NewModel(fns DiscoveryFuncs, theme Theme, refreshInterval time.Duration) *M
 	return &Model{
 		fns:              fns,
 		styles:           buildStyles(theme),
+		symbols:          UnicodeSymbols(),
 		sessions:         make(map[string]*playbackSession),
 		ctx:              ctx,
 		cancel:           cancel,
 		refreshInterval:  refreshInterval,
 		refreshCountdown: refreshInterval,
 	}
+}
+
+// SetSymbols swaps the glyph set used for status indicators and list markers.
+// Call before tea.Run; not safe to call while the picker is running.
+func (m *Model) SetSymbols(s Symbols) {
+	m.symbols = s
 }
 
 func titleScrollCmd() tea.Cmd {
@@ -355,8 +366,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.sessions, msg.channel)
 				return m, nil
 			}
-			s.status = msg.status
-			s.detail = msg.detail
+			if msg.notice != "" {
+				m.notice = msg.notice
+			} else {
+				s.status = msg.status
+				s.detail = msg.detail
+			}
 			return m, waitPlayback(s.ctx, s.ch, msg.channel, msg.gen)
 		}
 		return m, nil
@@ -414,9 +429,32 @@ func (m Model) View() tea.View {
 	return v
 }
 
+// Minimum terminal dimensions for the TUI to render its table frame cleanly.
+// Below this, lipgloss's column flex produces corrupt borders.
+const (
+	minTerminalWidth  = 60
+	minTerminalHeight = 10
+)
+
+// tooSmallView produces a minimal message that fits in any viewport down to 1x1.
+func tooSmallView(w, h int) string {
+	msg := fmt.Sprintf("Terminal too small — resize to at least %dx%d", minTerminalWidth, minTerminalHeight)
+	if w < len(msg) {
+		msg = "too small"
+	}
+	lines := make([]string, h)
+	if h > 0 {
+		lines[0] = msg
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) render() string {
 	if m.width == 0 {
 		return ""
+	}
+	if m.width < minTerminalWidth || m.height < minTerminalHeight {
+		return tooSmallView(m.width, m.height)
 	}
 
 	// The outer frame is a 3-row lipgloss table: tab bar, body, footer.
@@ -563,7 +601,7 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 		selected := i == m.cursor
 
 		if e.Kind == EntryLoadMore {
-			label := padRight("  ↓  Load more  (Enter)", m.width - 2)
+			label := padRight("  "+m.symbols.LoadMore+"  Load more  (Enter)", m.width-2)
 			if selected {
 				lines = append(lines, m.styles.selected.Render(label))
 			} else {
@@ -576,19 +614,19 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 		if sess, ok := m.sessions[e.Login]; ok {
 			switch sess.status {
 			case StatusPlaying:
-				statusCh = "▶"
+				statusCh = m.symbols.Playing
 			case StatusAdBreak:
-				statusCh = "◐"
+				statusCh = m.symbols.AdBreak
 			case StatusWaiting:
-				statusCh = "○"
+				statusCh = m.symbols.Waiting
 			case StatusReconnecting:
-				statusCh = "⟳"
+				statusCh = m.symbols.Reconnecting
 			}
 		}
 
 		favCh := " "
 		if e.IsFavorite {
-			favCh = "★"
+			favCh = m.symbols.Favorite
 		}
 
 		displayName := e.DisplayName
@@ -1649,12 +1687,19 @@ func (m Model) launchStream(channel, quality, avatarURL string) tea.Cmd {
 
 	fns := m.fns
 	go func() {
-		fns.Launch(ctx, channel, quality, avatarURL, func(status Status, detail string) {
+		send := func(status Status, detail string) {
 			select {
 			case ch <- statusUpdateMsg{channel: channel, status: status, detail: detail, gen: gen}:
 			default:
 			}
-		})
+		}
+		notice := func(text string) {
+			select {
+			case ch <- statusUpdateMsg{channel: channel, notice: text, gen: gen}:
+			default:
+			}
+		}
+		fns.Launch(ctx, channel, quality, avatarURL, send, notice)
 		ch <- statusUpdateMsg{channel: channel, done: true, gen: gen}
 		close(ch)
 	}()

@@ -105,11 +105,36 @@ type Theme struct {
 	TabActive string // active tab label color
 	Category  string // category name in browse view
 	Favorite  string // favorite star color
+
+	// Monochrome suppresses all color output, keeping only text attributes
+	// (bold/faint/italic/reverse). Honors the NO_COLOR convention.
+	Monochrome bool
 }
 
 // DefaultTheme returns a Theme with all fields empty (use hardcoded defaults).
 func DefaultTheme() Theme {
 	return Theme{}
+}
+
+// buildMonochromeStyles returns a palette that uses only text attributes —
+// no foreground or background colors — so lipgloss emits no color escape codes.
+func buildMonochromeStyles() pickerStyles {
+	plain := lipgloss.NewStyle()
+	return pickerStyles{
+		live:         plain.Bold(true),
+		offline:      plain.Faint(true),
+		title:        plain.Italic(true),
+		selected:     plain.Reverse(true),
+		border:       plain,
+		text:         plain,
+		playing:      plain.Bold(true),
+		adBreak:      plain.Italic(true),
+		waiting:      plain.Faint(true),
+		reconnecting: plain.Underline(true),
+		tabActive:    plain.Bold(true).Underline(true),
+		category:     plain.Italic(true),
+		favorite:     plain.Bold(true),
+	}
 }
 
 // pickerStyles holds the computed Lipgloss styles for one picker session.
@@ -131,6 +156,10 @@ type pickerStyles struct {
 
 // buildStyles creates Lipgloss styles from a Theme.
 func buildStyles(t Theme) pickerStyles {
+	if t.Monochrome {
+		return buildMonochromeStyles()
+	}
+
 	ps := pickerStyles{}
 
 	if t.Live != "" {

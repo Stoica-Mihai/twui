@@ -41,7 +41,8 @@ func mockFns(state *mockState) DiscoveryFuncs {
 		Streams: func(ctx context.Context, channel string) ([]string, error) {
 			return []string{"source", "720p60"}, nil
 		},
-		Launch: func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string)) {},
+		Launch: func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string), notice func(string)) {
+		},
 		ToggleFavorite: func(channel string, add bool) {
 			state.lastFavChannel = channel
 			state.lastFavAdd = add
@@ -310,6 +311,103 @@ func TestModel_StatusUpdate_DoneClears(t *testing.T) {
 
 	if _, ok := m2.sessions["testchan"]; ok {
 		t.Error("session should be removed after done=true")
+	}
+}
+
+// --- Batch 2: B6 (size guard), B7 (symbols), B8 (notice) ---
+
+func TestRender_TooSmallGuard_Width(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.width = 40 // below minTerminalWidth
+	m.height = 30
+
+	out := m.render()
+	if !strings.Contains(out, "too small") {
+		t.Errorf("expected too-small sentinel, got:\n%s", out)
+	}
+}
+
+func TestRender_TooSmallGuard_Height(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.width = 120
+	m.height = 5 // below minTerminalHeight
+
+	out := m.render()
+	if !strings.Contains(out, "too small") {
+		t.Errorf("expected too-small sentinel, got:\n%s", out)
+	}
+}
+
+func TestRender_TooSmallGuard_FirstFrameStillBlank(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.width = 0 // pre-WindowSizeMsg
+	m.height = 0
+
+	if out := m.render(); out != "" {
+		t.Errorf("expected empty render before WindowSizeMsg, got %q", out)
+	}
+}
+
+func TestSymbols_DefaultUnicode(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	if m.symbols.Playing != "▶" {
+		t.Errorf("default Playing symbol = %q, want ▶", m.symbols.Playing)
+	}
+}
+
+func TestSymbols_ASCIIOverride(t *testing.T) {
+	state := &mockState{}
+	mp := NewModel(mockFns(state), DefaultTheme(), 0)
+	mp.SetSymbols(ASCIISymbols())
+	if mp.symbols.Playing != ">" {
+		t.Errorf("ASCII Playing symbol = %q, want >", mp.symbols.Playing)
+	}
+	if mp.symbols.Favorite != "*" {
+		t.Errorf("ASCII Favorite = %q, want *", mp.symbols.Favorite)
+	}
+	// Unicode glyphs must be absent.
+	for _, g := range []string{"▶", "◐", "○", "⟳", "★", "↓"} {
+		for _, s := range []string{mp.symbols.Playing, mp.symbols.AdBreak, mp.symbols.Waiting, mp.symbols.Reconnecting, mp.symbols.Favorite, mp.symbols.LoadMore} {
+			if s == g {
+				t.Errorf("ASCII symbol set leaked unicode glyph %q", g)
+			}
+		}
+	}
+}
+
+func TestStatusUpdate_NoticeSetsFooterMessage(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	gen := 1
+	ch := make(chan statusUpdateMsg, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m.sessions["chan"] = &playbackSession{
+		ctx:    ctx,
+		cancel: cancel,
+		gen:    gen,
+		status: StatusPlaying,
+		ch:     ch,
+	}
+
+	newM, _ := m.Update(statusUpdateMsg{
+		channel: "chan",
+		notice:  "1080p60 unavailable — using 720p60",
+		gen:     gen,
+	})
+	m2 := newM.(Model)
+
+	if !strings.Contains(m2.notice, "1080p60 unavailable") {
+		t.Errorf("expected notice, got %q", m2.notice)
+	}
+	// Status must not be clobbered by a notice-only update.
+	if m2.sessions["chan"].status != StatusPlaying {
+		t.Errorf("notice update clobbered session status: %v", m2.sessions["chan"].status)
 	}
 }
 

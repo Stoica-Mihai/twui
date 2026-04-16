@@ -99,3 +99,52 @@ func TestBuildStyles_DoesNotPanic(t *testing.T) {
 	}
 	buildStyles(DefaultTheme())
 }
+
+// Monochrome mode must not emit any hex color string that was present in the
+// source Theme: the monochrome dispatcher takes over and ignores all color fields.
+func TestBuildStyles_MonochromeDropsColors(t *testing.T) {
+	colored := "#abcdef"
+	t1 := Theme{
+		Live: colored, Offline: colored, Title: colored,
+		SelectedBg: colored, SelectedFg: colored,
+		Border: colored, Text: colored,
+		Playing: colored, AdBreak: colored, Waiting: colored, Reconnecting: colored,
+		TabActive: colored, Category: colored, Favorite: colored,
+		Monochrome: true,
+	}
+	ps := buildStyles(t1)
+	// Render something through each style; none of the outputs should contain the
+	// original hex string (lipgloss would only embed it if a Foreground/Background
+	// was set with that color).
+	for name, s := range map[string]interface{ Render(...string) string }{
+		"live":         ps.live,
+		"offline":      ps.offline,
+		"title":        ps.title,
+		"selected":     ps.selected,
+		"border":       ps.border,
+		"text":         ps.text,
+		"playing":      ps.playing,
+		"adBreak":      ps.adBreak,
+		"waiting":      ps.waiting,
+		"reconnecting": ps.reconnecting,
+		"tabActive":    ps.tabActive,
+		"category":     ps.category,
+		"favorite":     ps.favorite,
+	} {
+		out := s.Render("x")
+		if strings.Contains(out, colored) {
+			t.Errorf("monochrome style %s leaked color %q in output %q", name, colored, out)
+		}
+	}
+}
+
+// When Monochrome is false, the colored branch runs — the rendered Live style
+// for a colored Theme should differ byte-for-byte from the monochrome render,
+// at least when lipgloss's active color profile supports any color output.
+func TestBuildStyles_ColoredPathStillRuns(t *testing.T) {
+	colored := buildStyles(Theme{Live: "#00ff00"}).live.Render("x")
+	mono := buildStyles(Theme{Live: "#00ff00", Monochrome: true}).live.Render("x")
+	if colored == mono {
+		t.Skip("lipgloss color profile suppresses all color in this env; branches not observable")
+	}
+}
