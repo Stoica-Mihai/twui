@@ -116,3 +116,107 @@ func TestOptions_DefaultNotOverriddenBySet(t *testing.T) {
 		t.Errorf("default should survive unrelated Set; got %q", got)
 	}
 }
+
+func TestOptions_GetInt_NonIntegerValue(t *testing.T) {
+	o := NewOptions()
+	o.Set("name", "alice")
+
+	if got := o.GetInt("name"); got != 0 {
+		t.Errorf("GetInt on string value = %d, want 0", got)
+	}
+}
+
+func TestOptions_GetInt_FromInt64(t *testing.T) {
+	o := NewOptions()
+	o.Set("big", int64(999))
+
+	if got := o.GetInt("big"); got != 999 {
+		t.Errorf("GetInt from int64 = %d, want 999", got)
+	}
+}
+
+func TestOptions_GetInt_Missing_ReturnsZero(t *testing.T) {
+	o := NewOptions()
+	if got := o.GetInt("missing"); got != 0 {
+		t.Errorf("GetInt(missing) = %d, want 0", got)
+	}
+}
+
+func TestOptions_GetInt_BoolValue_ReturnsZero(t *testing.T) {
+	o := NewOptions()
+	o.Set("flag", true)
+
+	if got := o.GetInt("flag"); got != 0 {
+		t.Errorf("GetInt on bool = %d, want 0", got)
+	}
+}
+
+func TestOptions_GetFloat_NonFloatValue(t *testing.T) {
+	o := NewOptions()
+	o.Set("name", "alice")
+
+	if got := o.GetFloat("name"); got != 0 {
+		t.Errorf("GetFloat on string value = %f, want 0", got)
+	}
+}
+
+func TestOptions_GetFloat_FromFloat32(t *testing.T) {
+	o := NewOptions()
+	o.Set("f32", float32(2.5))
+
+	got := o.GetFloat("f32")
+	if got < 2.4 || got > 2.6 {
+		t.Errorf("GetFloat from float32 = %f, want ~2.5", got)
+	}
+}
+
+func TestOptions_GetFloat_FromInt64(t *testing.T) {
+	o := NewOptions()
+	o.Set("big", int64(42))
+
+	if got := o.GetFloat("big"); got != 42.0 {
+		t.Errorf("GetFloat from int64 = %f, want 42.0", got)
+	}
+}
+
+func TestOptions_GetFloat_BoolValue_ReturnsZero(t *testing.T) {
+	o := NewOptions()
+	o.Set("flag", true)
+
+	if got := o.GetFloat("flag"); got != 0 {
+		t.Errorf("GetFloat on bool = %f, want 0", got)
+	}
+}
+
+func TestOptions_GetBool_Missing_ReturnsFalse(t *testing.T) {
+	o := NewOptions()
+	if got := o.GetBool("missing"); got {
+		t.Error("GetBool(missing) should return false")
+	}
+}
+
+func TestOptions_GetString_Missing_ReturnsEmpty(t *testing.T) {
+	o := NewOptions()
+	if got := o.GetString("missing"); got != "" {
+		t.Errorf("GetString(missing) = %q, want empty", got)
+	}
+}
+
+func TestOptions_SetOverridesSetDefault(t *testing.T) {
+	o := NewOptions()
+	o.SetDefault("key", "default_val")
+	o.Set("key", "explicit_val")
+
+	if got := o.GetString("key"); got != "explicit_val" {
+		t.Errorf("Set should override SetDefault; got %q", got)
+	}
+}
+
+func TestOptions_GetString_FromDefault(t *testing.T) {
+	o := NewOptions()
+	o.SetDefault("ua", "agent/1.0")
+
+	if got := o.GetString("ua"); got != "agent/1.0" {
+		t.Errorf("GetString from default = %q, want %q", got, "agent/1.0")
+	}
+}

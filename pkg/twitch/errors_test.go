@@ -62,3 +62,59 @@ func TestGQLServerError_UnwrapReturnsErrGQLServerError(t *testing.T) {
 		t.Errorf("Unwrap() = %v, want ErrGQLServerError", err.Unwrap())
 	}
 }
+
+func TestRateLimitedError_NegativeDuration(t *testing.T) {
+	err := &RateLimitedError{RetryAfter: -1 * time.Second}
+	msg := err.Error()
+	// Negative duration should not trigger the "retry after" branch
+	if msg != "twitch: rate limited" {
+		t.Errorf("got %q, want %q (negative duration should be treated as zero)", msg, "twitch: rate limited")
+	}
+}
+
+func TestGQLServerError_EmptyMessage(t *testing.T) {
+	err := &gqlServerError{Message: ""}
+	want := "twitch: gql error: "
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestErrorSentinels_AreDistinct(t *testing.T) {
+	sentinels := []error{ErrAccessDenied, ErrChannelNotFound, ErrChannelOffline, ErrGQLServerError}
+	for i, a := range sentinels {
+		for j, b := range sentinels {
+			if i != j && errors.Is(a, b) {
+				t.Errorf("sentinel %d (%v) and %d (%v) should not be equal", i, a, j, b)
+			}
+		}
+	}
+}
+
+func TestRateLimitedError_ExactMessages(t *testing.T) {
+	cases := []struct {
+		dur  time.Duration
+		want string
+	}{
+		{0, "twitch: rate limited"},
+		{1 * time.Second, "twitch: rate limited (retry after 1s)"},
+		{30 * time.Second, "twitch: rate limited (retry after 30s)"},
+	}
+	for _, c := range cases {
+		err := &RateLimitedError{RetryAfter: c.dur}
+		if err.Error() != c.want {
+			t.Errorf("RateLimitedError{%v}.Error() = %q, want %q", c.dur, err.Error(), c.want)
+		}
+	}
+}
+
+func TestGQLServerError_ErrorsAs(t *testing.T) {
+	var target *gqlServerError
+	err := &gqlServerError{Message: "test"}
+	if !errors.As(err, &target) {
+		t.Error("errors.As should match *gqlServerError")
+	}
+	if target.Message != "test" {
+		t.Errorf("Message = %q, want %q", target.Message, "test")
+	}
+}
