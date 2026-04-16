@@ -314,6 +314,39 @@ func TestModel_StatusUpdate_DoneClears(t *testing.T) {
 	}
 }
 
+// --- Batch 3: B3 (goroutine panic recovery) ---
+
+// A panicking Launch must not leave the session channel open, since any future
+// drain goroutine for the same channel name would block forever on it.
+func TestLaunchStream_PanicInLaunchStillClosesChannel(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.fns.Launch = func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string), notice func(string)) {
+		panic("boom")
+	}
+
+	_ = m.launchStream("chan", "", "")
+
+	sess, ok := m.sessions["chan"]
+	if !ok {
+		t.Fatal("session not created")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		for range sess.ch {
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected: ch closed, drain exited
+	case <-time.After(2 * time.Second):
+		t.Fatal("ch not closed after Launch panic — goroutine leaked")
+	}
+}
+
 // --- Batch 2: B6 (size guard), B7 (symbols), B8 (notice) ---
 
 func TestRender_TooSmallGuard_Width(t *testing.T) {

@@ -159,6 +159,10 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	const notifyTimeoutMs = 5000
 	notifier := notify.NewNotifier(notifyTimeoutMs)
 
+	// Prune the on-disk avatar cache so files for channels the user no longer
+	// watches don't accumulate in /tmp forever. Runs once at startup.
+	pruneAvatarCache(avatarCacheDir(), avatarCacheMaxAge)
+
 	// Load theme
 	themeName := viper.GetString("theming.theme")
 	theme := ui.ThemeByName(themeName)
@@ -580,26 +584,53 @@ func streamWeight(name string) float64 {
 	return 1 - altPenalty
 }
 
-// avatarCache stores downloaded avatar file paths to avoid re-downloading.
-var avatarCache sync.Map
+// avatarCacheDir is the on-disk avatar directory. Exposed for tests.
+func avatarCacheDir() string {
+	return filepath.Join(os.TempDir(), "twui-avatars")
+}
+
+// avatarCacheMaxAge bounds how long downloaded avatars persist on disk.
+// Older files are pruned on startup to keep the cache from growing forever.
+const avatarCacheMaxAge = 7 * 24 * time.Hour
+
+// pruneAvatarCache removes files in dir whose mtime is older than maxAge.
+// Best-effort: errors are logged at debug level and otherwise ignored.
+func pruneAvatarCache(dir string, maxAge time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // directory may not exist yet
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+				slog.Debug("failed to prune avatar", "file", e.Name(), "err", err)
+			}
+		}
+	}
+}
 
 // downloadAvatar downloads a channel avatar to a temp file and returns the path.
-// Returns "" on any error. Caches per channel for the session lifetime.
+// Returns "" on any error. The disk itself serves as the cache: on a second
+// call for the same channel (within the TTL), the existing file is returned
+// without re-downloading.
 func downloadAvatar(ctx context.Context, client *http.Client, url, channel string) string {
 	if url == "" {
 		return ""
 	}
-	if p, ok := avatarCache.Load(channel); ok {
-		return p.(string)
-	}
 
-	dir := filepath.Join(os.TempDir(), "twui-avatars")
+	dir := avatarCacheDir()
 	_ = os.MkdirAll(dir, 0700)
 
-	// Check if file exists on disk from a previous session.
 	filePath := filepath.Join(dir, channel+".jpg")
 	if _, err := os.Stat(filePath); err == nil {
-		avatarCache.Store(channel, filePath)
 		return filePath
 	}
 
@@ -628,7 +659,6 @@ func downloadAvatar(ctx context.Context, client *http.Client, url, channel strin
 	}
 	f.Close()
 
-	avatarCache.Store(channel, filePath)
 	return filePath
 }
 

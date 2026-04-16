@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1687,6 +1688,22 @@ func (m Model) launchStream(channel, quality, avatarURL string) tea.Cmd {
 
 	fns := m.fns
 	go func() {
+		// Guarantee cleanup even if fns.Launch panics. Without this, a panicking
+		// Launch would leave ch open forever — and the drain goroutine spawned
+		// by the next launchStream for the same channel would block indefinitely.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Launch panicked", "channel", channel, "panic", r)
+			}
+			// Best-effort done signal; non-blocking since a cancelled session
+			// may no longer be reading ch.
+			select {
+			case ch <- statusUpdateMsg{channel: channel, done: true, gen: gen}:
+			default:
+			}
+			close(ch)
+		}()
+
 		send := func(status Status, detail string) {
 			select {
 			case ch <- statusUpdateMsg{channel: channel, status: status, detail: detail, gen: gen}:
@@ -1700,8 +1717,6 @@ func (m Model) launchStream(channel, quality, avatarURL string) tea.Cmd {
 			}
 		}
 		fns.Launch(ctx, channel, quality, avatarURL, send, notice)
-		ch <- statusUpdateMsg{channel: channel, done: true, gen: gen}
-		close(ch)
 	}()
 
 	return waitPlayback(ctx, ch, channel, gen)

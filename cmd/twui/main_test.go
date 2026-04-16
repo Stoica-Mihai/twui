@@ -586,6 +586,53 @@ func TestParseRefreshInterval(t *testing.T) {
 	}
 }
 
+// --- pruneAvatarCache ---
+
+func TestPruneAvatarCache_RemovesOldFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	old := filepath.Join(dir, "old.jpg")
+	recent := filepath.Join(dir, "recent.jpg")
+	_ = os.WriteFile(old, []byte("a"), 0600)
+	_ = os.WriteFile(recent, []byte("a"), 0600)
+
+	// Backdate `old` by 10 days; keep `recent` fresh.
+	longAgo := time.Now().Add(-10 * 24 * time.Hour)
+	if err := os.Chtimes(old, longAgo, longAgo); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	pruneAvatarCache(dir, 7*24*time.Hour)
+
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("old file should have been pruned, err=%v", err)
+	}
+	if _, err := os.Stat(recent); err != nil {
+		t.Errorf("recent file should be preserved: %v", err)
+	}
+}
+
+func TestPruneAvatarCache_MissingDirIsOK(t *testing.T) {
+	// Must not panic or error on a non-existent directory.
+	pruneAvatarCache(filepath.Join(t.TempDir(), "does-not-exist"), time.Hour)
+}
+
+func TestPruneAvatarCache_SkipsSubdirectories(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "keep-me")
+	if err := os.Mkdir(subdir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	longAgo := time.Now().Add(-10 * 24 * time.Hour)
+	_ = os.Chtimes(subdir, longAgo, longAgo)
+
+	pruneAvatarCache(dir, 7*24*time.Hour)
+
+	if _, err := os.Stat(subdir); err != nil {
+		t.Errorf("subdirectory should be skipped by prune, got %v", err)
+	}
+}
+
 // --- applyFlagFromViper ---
 
 func TestApplyFlagFromViper_ValidValueApplied(t *testing.T) {
