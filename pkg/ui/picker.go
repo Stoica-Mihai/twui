@@ -947,27 +947,16 @@ func (m Model) renderRelatedOverlay() string {
 }
 
 func (m Model) renderHelpOverlay() string {
-	keys := [][2]string{
-		{"Tab / Shift+Tab", "Switch view"},
-		{"j / k / ↑ / ↓", "Navigate"},
-		{"PgUp / PgDn", "Page scroll"},
-		{"g / G", "Top / bottom"},
-		{"Enter", "Open / launch stream"},
-		{"/", "Activate search"},
-		{"Esc", "Back / cancel"},
-		{"f", "Toggle favorite"},
-		{"x", "Toggle ignore"},
-		{"i", "Quality picker"},
-		{"t", "Theme picker"},
-		{"r", "Related/host channels"},
-		{"R", "Manual refresh"},
-		{"?", "Toggle help"},
-		{"q / Ctrl+C", "Quit"},
-	}
 	w := 50
 	lines := m.overlayHeader(" Keyboard Shortcuts", w)
-	for _, kv := range keys {
-		lines = append(lines, m.overlayRow(pad(fmt.Sprintf("  %-22s %s", kv[0], kv[1]), w)))
+	for _, b := range m.bindings() {
+		if b.Display == "" || b.Desc == "" {
+			// Continuation entry (e.g., shift+tab paired with tab) — handled
+			// by the sibling binding with a non-empty Display; skip to avoid
+			// rendering blank rows.
+			continue
+		}
+		lines = append(lines, m.overlayRow(pad(fmt.Sprintf("  %-22s %s", b.Display, b.Desc), w)))
 	}
 	lines = append(lines, m.overlayFooter(w))
 	return strings.Join(lines, "\n")
@@ -999,113 +988,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleSearchInput(msg)
 	}
 
-	switch msg.String() {
-	case "q", "Q", "ctrl+c":
-		m.cancel()
-		return m, tea.Quit
-
-	case "?":
-		m.overlay = overlayHelp
-		return m, nil
-
-	case "tab":
-		m.mode = (m.mode + 1) % 4
-		m.cursor = 0
-		m.titleScrollOffset = 0
-		m.titleScrollDir = 1
-		return m, m.loadCurrentView()
-
-	case "shift+tab":
-		m.mode = (m.mode + 3) % 4
-		m.cursor = 0
-		m.titleScrollOffset = 0
-		m.titleScrollDir = 1
-		return m, m.loadCurrentView()
-
-	case "j", "down":
-		m = m.moveCursor(1)
-		return m, nil
-
-	case "k", "up":
-		m = m.moveCursor(-1)
-		return m, nil
-
-	case "pgdown":
-		m = m.moveCursor(10)
-		return m, nil
-
-	case "pgup":
-		m = m.moveCursor(-10)
-		return m, nil
-
-	case "g":
-		m.cursor = 0
-		m.titleScrollOffset = 0
-		m.titleScrollDir = 1
-		return m, nil
-
-	case "G":
-		m.cursor = m.currentListLen() - 1
-		m.titleScrollOffset = 0
-		m.titleScrollDir = 1
-		return m, nil
-
-	case "home":
-		m.cursor = 0
-		m.titleScrollOffset = 0
-		m.titleScrollDir = 1
-		return m, nil
-
-	case "end":
-		n := m.currentListLen()
-		if n > 0 {
-			m.cursor = n - 1
-		}
-		m.titleScrollOffset = 0
-		m.titleScrollDir = 1
-		return m, nil
-
-	case "enter":
-		return m.handleEnter()
-
-	case "esc":
-		return m.handleEsc()
-
-	case "f":
-		return m.handleFavorite()
-
-	case "x":
-		return m.handleIgnore()
-
-	case "i":
-		return m.handleQualityPicker()
-
-	case "t":
-		m.overlay = overlayTheme
-		m.themeIdx = 0
-		return m, nil
-
-	case "r":
-		return m.handleRelated()
-
-	case "R":
-		if m.refreshInterval > 0 && !m.refreshing {
-			m.refreshCountdown = m.refreshInterval
-			m.refreshing = true
-			if cmd := m.refreshCurrentView(); cmd != nil {
-				return m, cmd
-			}
-		}
-		return m, nil
-
-	case "/":
-		if m.mode != viewModeSearch {
-			m.mode = viewModeSearch
-		}
-		m.searching = true
-		return m, nil
+	if newM, cmd, ok := m.dispatchBinding(msg.String()); ok {
+		return newM, cmd
 	}
-
 	return m, nil
 }
 
