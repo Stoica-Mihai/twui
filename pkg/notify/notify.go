@@ -10,6 +10,16 @@ import (
 	"sync"
 )
 
+// execRun runs a named binary with the given args. It's a package-level seam
+// so tests can capture the binary+args instead of spawning a real process.
+var execRun = func(name string, args ...string) error {
+	return exec.Command(name, args...).Run()
+}
+
+// execLookPath is the hook for binary discovery; overridden by tests to
+// simulate presence or absence of notify-send / osascript.
+var execLookPath = exec.LookPath
+
 // escapeAppleScript escapes backslashes and double quotes for safe
 // interpolation into AppleScript string literals.
 func escapeAppleScript(s string) string {
@@ -43,7 +53,7 @@ type linuxNotifier struct {
 
 func (n *linuxNotifier) send(args []string) {
 	n.once.Do(func() {
-		_, err := exec.LookPath("notify-send")
+		_, err := execLookPath("notify-send")
 		n.available = err == nil
 		if !n.available {
 			slog.Warn("notify-send not found in PATH; install libnotify-bin for desktop notifications")
@@ -55,7 +65,7 @@ func (n *linuxNotifier) send(args []string) {
 	if n.timeoutMs > 0 {
 		args = append([]string{"-t", fmt.Sprintf("%d", n.timeoutMs)}, args...)
 	}
-	if err := exec.Command("notify-send", args...).Run(); err != nil {
+	if err := execRun("notify-send", args...); err != nil {
 		slog.Debug("notify-send failed", "err", err)
 	}
 }
@@ -80,7 +90,7 @@ type macNotifier struct {
 
 func (n *macNotifier) Send(title, body string) {
 	n.once.Do(func() {
-		_, err := exec.LookPath("osascript")
+		_, err := execLookPath("osascript")
 		n.available = err == nil
 		if !n.available {
 			slog.Warn("osascript not found in PATH; desktop notifications disabled")
@@ -90,7 +100,7 @@ func (n *macNotifier) Send(title, body string) {
 		return
 	}
 	script := `display notification "` + escapeAppleScript(body) + `" with title "` + escapeAppleScript(title) + `"`
-	if err := exec.Command("osascript", "-e", script).Run(); err != nil {
+	if err := execRun("osascript", "-e", script); err != nil {
 		slog.Debug("osascript failed", "err", err)
 	}
 }

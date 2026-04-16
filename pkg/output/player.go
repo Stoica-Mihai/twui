@@ -24,9 +24,10 @@ type Player struct {
 	AudioOnly  bool      // if true, pass flags to disable video decoding (mpv: --vid=no --force-window)
 }
 
-// Play launches the player, pipes r into its stdin, and blocks until the player
-// exits. Unless NoClose is true the reader is closed when the player finishes.
-func (p *Player) Play(ctx context.Context, r io.ReadCloser) error {
+// buildArgs assembles the command-line arguments for the configured player,
+// including the leading "-" stdin marker, any player-specific title/terminal
+// flags, and the caller's extra Args appended at the end.
+func (p *Player) buildArgs() []string {
 	args := []string{"-"} // read from stdin
 
 	base := strings.ToLower(filepath.Base(p.Path))
@@ -45,9 +46,13 @@ func (p *Player) Play(ctx context.Context, r io.ReadCloser) error {
 		args = append(args, "--vid=no", "--force-window")
 	}
 
-	args = append(args, p.Args...)
+	return append(args, p.Args...)
+}
 
-	cmd := exec.Command(p.Path, args...)
+// Play launches the player, pipes r into its stdin, and blocks until the player
+// exits. Unless NoClose is true the reader is closed when the player finishes.
+func (p *Player) Play(ctx context.Context, r io.ReadCloser) error {
+	cmd := exec.Command(p.Path, p.buildArgs()...)
 	cmd.Stdout = io.Discard
 	if p.Stderr != nil {
 		cmd.Stderr = p.Stderr
