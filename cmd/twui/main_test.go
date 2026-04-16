@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mcs/twui/pkg/stream"
 )
@@ -300,6 +301,200 @@ func TestWriteConfigStringKey_AppendWhenMissing(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if !strings.Contains(string(raw), "gruvbox") {
 		t.Errorf("appended value missing: %s", string(raw))
+	}
+}
+
+// --- config key duplication bug ---
+
+func TestWriteConfigKey_NoKeyDuplication(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// First write creates the entry.
+	if err := writeConfigKey(path, "twitch.channels", []string{"alice"}); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	// Second write should replace, not duplicate.
+	if err := writeConfigKey(path, "twitch.channels", []string{"alice", "bob"}); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if n := strings.Count(content, "channels"); n != 1 {
+		t.Errorf("expected exactly 1 'channels' line, got %d in:\n%s", n, content)
+	}
+	if !strings.Contains(content, `"bob"`) {
+		t.Errorf("second write value missing: %s", content)
+	}
+}
+
+func TestWriteConfigKey_FixesDottedKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Simulate buggy file from old code that wrote the full dotted form.
+	_ = os.WriteFile(path, []byte("twitch.channels = [\"old\"]\n"), 0600)
+
+	if err := writeConfigKey(path, "twitch.channels", []string{"fixed"}); err != nil {
+		t.Fatalf("writeConfigKey: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if strings.Contains(content, `"old"`) {
+		t.Errorf("old value should be replaced: %s", content)
+	}
+	if !strings.Contains(content, `"fixed"`) {
+		t.Errorf("new value missing: %s", content)
+	}
+	if n := strings.Count(content, "channels"); n != 1 {
+		t.Errorf("expected 1 channels line, got %d in:\n%s", n, content)
+	}
+}
+
+func TestWriteConfigKey_AppendsUnderSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	_ = os.WriteFile(path, []byte("[twitch]\n"), 0600)
+
+	if err := writeConfigKey(path, "twitch.channels", []string{"a"}); err != nil {
+		t.Fatalf("writeConfigKey: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	// Should use short form under existing section.
+	if strings.Contains(content, "twitch.channels") {
+		t.Errorf("should use short form, got dotted key in:\n%s", content)
+	}
+	if !strings.Contains(content, `channels = ["a"]`) {
+		t.Errorf("expected short form channels line, got:\n%s", content)
+	}
+}
+
+func TestWriteConfigKey_CreatesSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := writeConfigKey(path, "twitch.channels", []string{"new"}); err != nil {
+		t.Fatalf("writeConfigKey: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if !strings.Contains(content, "[twitch]") {
+		t.Errorf("section header missing in:\n%s", content)
+	}
+	if !strings.Contains(content, `channels = ["new"]`) {
+		t.Errorf("short form key missing in:\n%s", content)
+	}
+	if strings.Contains(content, "twitch.channels") {
+		t.Errorf("should not use dotted key in:\n%s", content)
+	}
+}
+
+func TestWriteConfigStringKey_NoKeyDuplication(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := writeConfigStringKey(path, "theming.theme", "dracula"); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := writeConfigStringKey(path, "theming.theme", "nord"); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if n := strings.Count(content, "theme"); n != 1 {
+		t.Errorf("expected exactly 1 'theme' line, got %d in:\n%s", n, content)
+	}
+	if !strings.Contains(content, "nord") {
+		t.Errorf("second value missing: %s", content)
+	}
+}
+
+func TestWriteConfigStringKey_FixesDottedKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Simulate buggy file.
+	_ = os.WriteFile(path, []byte("theming.theme = \"old\"\n"), 0600)
+
+	if err := writeConfigStringKey(path, "theming.theme", "fixed"); err != nil {
+		t.Fatalf("writeConfigStringKey: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if strings.Contains(content, "old") {
+		t.Errorf("old value should be replaced: %s", content)
+	}
+	if !strings.Contains(content, "fixed") {
+		t.Errorf("new value missing: %s", content)
+	}
+	if n := strings.Count(content, "theme"); n != 1 {
+		t.Errorf("expected 1 theme line, got %d in:\n%s", n, content)
+	}
+}
+
+// --- parseRefreshInterval ---
+
+func TestParseRefreshInterval(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    time.Duration
+		wantErr string
+	}{
+		{"empty disables refresh", "", 0, ""},
+		{"explicit zero disables refresh", "0s", 0, ""},
+		{"30s minimum allowed", "30s", 30 * time.Second, ""},
+		{"1m valid", "1m", time.Minute, ""},
+		{"2m30s valid", "2m30s", 2*time.Minute + 30*time.Second, ""},
+		{"bare integer rejected", "60", 0, "invalid refresh interval"},
+		{"garbage rejected", "soon", 0, "invalid refresh interval"},
+		{"below minimum 5s rejected", "5s", 0, "must be at least 30s"},
+		{"below minimum 29s rejected", "29s", 0, "must be at least 30s"},
+		{"negative rejected", "-1m", 0, "must be at least 30s"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseRefreshInterval(c.input)
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got != c.want {
+					t.Errorf("got %v, want %v", got, c.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", c.wantErr)
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), c.wantErr)
+			}
+		})
+	}
+}
+
+// --- --refresh flag registration ---
+
+func TestRefreshFlag_Registered(t *testing.T) {
+	f := rootCmd.PersistentFlags().Lookup("refresh")
+	if f == nil {
+		// Cobra registers persistent flags on the root, but the actual --refresh might be on rootCmd directly.
+		f = rootCmd.Flags().Lookup("refresh")
+	}
+	if f == nil {
+		t.Fatal("--refresh flag not registered on rootCmd")
+	}
+	if f.Usage == "" {
+		t.Error("--refresh flag has no usage string")
+	}
+	if !strings.Contains(f.Usage, "30s") && !strings.Contains(f.Usage, "1m") {
+		t.Errorf("--refresh usage should give a duration example, got %q", f.Usage)
 	}
 }
 

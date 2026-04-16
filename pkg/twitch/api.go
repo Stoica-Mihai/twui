@@ -14,22 +14,28 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	DefaultClientID  = "kimne78kx3ncx6brgo4mv6wki5h1ko"
-	GQLEndpoint      = "https://gql.twitch.tv/gql"
-	DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
+	DefaultClientID    = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+	GQLEndpoint        = "https://gql.twitch.tv/gql"
+	IntegrityEndpoint  = "https://passport.twitch.tv/integrity"
+	DefaultUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
 
-	maxGQLRetryAfter = 30 * time.Second
+	maxGQLRetryAfter      = 30 * time.Second
+	integrityExpiryBuffer = time.Minute // refresh before this much time remains
 )
 
 // Persisted query hashes for Twitch GQL operations.
+// Empty hash → skip straight to fallback query text (see doGQL).
 const (
-	hashAccessToken     = "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9"
-	hashStreamMetadata1 = "b57f9b910f8cd1a4659d894fe7550ccc81ec9052c01e438b290fd66a040b9b93"
-	hashViewerCount     = "a5f2e34d626a9f4f5c0204f910bab2194948a9502089be558bb6e779a9e1b3d2"
+	hashAccessToken = "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9"
+	hashViewerCount = "a5f2e34d626a9f4f5c0204f910bab2194948a9502089be558bb6e779a9e1b3d2"
+	// StreamMetadata hash cleared: the persisted query mapped to this hash omits
+	// viewersCount, displayName, and stream.title, causing blank metadata.
+	// Always use fallback query which selects all needed fields.
 )
 
 // fallbackQueries holds full GQL query text for each operation, used when
@@ -47,7 +53,7 @@ var fallbackQueries = map[string]string{
     __typename
   }
 }`,
-	"StreamMetadata": `query StreamMetadata($channelLogin: String!, $includeIsDJ: Boolean!) {
+	"StreamMetadata": `query StreamMetadata($channelLogin: String!) {
   user(login: $channelLogin) {
     id
     displayName
@@ -85,9 +91,14 @@ type TwitchAPI struct {
 	ClientID          string
 	UserAgent         string
 	DeviceID          string
+	clientSessionID   string
 	client            *http.Client
 	headers           map[string]string
 	accessTokenParams map[string]string
+
+	integrityMu     sync.Mutex
+	integrityToken  string
+	integrityExpiry time.Time
 }
 
 // newDeviceID generates a random UUID v4 string for use as X-Device-ID.
@@ -97,6 +108,13 @@ func newDeviceID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// newClientSessionID generates a 16-character hex string for use as Client-Session-Id.
+func newClientSessionID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // AccessTokenResponse holds the signature and token returned by the
@@ -153,10 +171,68 @@ func NewTwitchAPI(client *http.Client, clientID, userAgent string, customHeaders
 		ClientID:          clientID,
 		UserAgent:         userAgent,
 		DeviceID:          newDeviceID(),
+		clientSessionID:   newClientSessionID(),
 		client:            client,
 		headers:           customHeaders,
 		accessTokenParams: accessTokenParams,
 	}
+}
+
+// getIntegrityToken returns a cached Client-Integrity token, fetching a fresh one when expired.
+// If the fetch fails it returns "" — callers continue without the header.
+func (a *TwitchAPI) getIntegrityToken(ctx context.Context) string {
+	a.integrityMu.Lock()
+	defer a.integrityMu.Unlock()
+	if a.integrityToken != "" && time.Now().Before(a.integrityExpiry.Add(-integrityExpiryBuffer)) {
+		return a.integrityToken
+	}
+	token, expiry := a.fetchIntegrityToken(ctx)
+	if token != "" {
+		a.integrityToken = token
+		a.integrityExpiry = expiry
+	}
+	return token
+}
+
+// fetchIntegrityToken makes a single request to the Twitch passport endpoint.
+func (a *TwitchAPI) fetchIntegrityToken(ctx context.Context) (string, time.Time) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, IntegrityEndpoint, strings.NewReader("{}"))
+	if err != nil {
+		return "", time.Time{}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Client-ID", a.ClientID)
+	req.Header.Set("Client-Session-Id", a.clientSessionID)
+	req.Header.Set("X-Device-ID", a.DeviceID)
+	req.Header.Set("User-Agent", a.UserAgent)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		slog.Debug("integrity token fetch failed", "err", err)
+		return "", time.Time{}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("integrity token: bad status", "status", resp.StatusCode, "body", string(body))
+		return "", time.Time{}
+	}
+
+	var ir struct {
+		Token      string `json:"token"`
+		Expiration string `json:"expiration"`
+	}
+	if err := json.Unmarshal(body, &ir); err != nil || ir.Token == "" {
+		return "", time.Time{}
+	}
+
+	expiry, err := time.Parse(time.RFC3339, ir.Expiration)
+	if err != nil {
+		expiry = time.Now().Add(5 * time.Minute)
+	}
+	slog.Debug("integrity token fetched", "expiry", expiry)
+	return ir.Token, expiry
 }
 
 // AccessToken fetches a live stream access token via the PlaybackAccessToken
@@ -205,10 +281,9 @@ func (a *TwitchAPI) AccessToken(ctx context.Context, id string) (*AccessTokenRes
 func (a *TwitchAPI) StreamMetadata(ctx context.Context, channel string) (*Metadata, error) {
 	variables := map[string]any{
 		"channelLogin": channel,
-		"includeIsDJ":  true,
 	}
 
-	body, err := a.doGQL(ctx, "StreamMetadata", hashStreamMetadata1, variables, nil)
+	body, err := a.doGQL(ctx, "StreamMetadata", "", variables, nil)
 	if err != nil {
 		return nil, fmt.Errorf("twitch: fetch stream metadata: %w", err)
 	}
@@ -334,6 +409,10 @@ func (a *TwitchAPI) doGQLRoundTrip(ctx context.Context, bodyBytes []byte, extraH
 	req.Header.Set("Client-ID", a.ClientID)
 	req.Header.Set("User-Agent", a.UserAgent)
 	req.Header.Set("X-Device-ID", a.DeviceID)
+	req.Header.Set("Client-Session-Id", a.clientSessionID)
+	if token := a.getIntegrityToken(ctx); token != "" {
+		req.Header.Set("Client-Integrity", token)
+	}
 
 	for k, v := range a.headers {
 		req.Header.Set(k, v)

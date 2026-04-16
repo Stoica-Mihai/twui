@@ -16,12 +16,13 @@ func TestLive_BrowseCategories(t *testing.T) {
 		t.Skip("skipping live Twitch API test")
 	}
 	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
-	cats, next, err := api.BrowseCategories(context.Background(), 5, "")
+	// Request the API maximum (100); cursor-based pagination is integrity-blocked.
+	cats, _, err := api.BrowseCategories(context.Background(), 100, "")
 	if err != nil {
 		t.Fatalf("BrowseCategories: %v", err)
 	}
-	if len(cats) == 0 {
-		t.Fatal("expected at least one category, got none")
+	if len(cats) < 30 {
+		t.Fatalf("expected at least 30 categories at the API maximum, got %d", len(cats))
 	}
 	for _, c := range cats {
 		if c.Name == "" {
@@ -31,8 +32,8 @@ func TestLive_BrowseCategories(t *testing.T) {
 			t.Errorf("category %q has non-positive viewer count: %d", c.Name, c.ViewerCount)
 		}
 	}
-	t.Logf("got %d categories, first: %q (%d viewers), nextCursor=%q",
-		len(cats), cats[0].Name, cats[0].ViewerCount, next)
+	t.Logf("got %d categories, first: %q (%d viewers)",
+		len(cats), cats[0].Name, cats[0].ViewerCount)
 }
 
 func TestLive_CategoryStreams(t *testing.T) {
@@ -41,12 +42,14 @@ func TestLive_CategoryStreams(t *testing.T) {
 	}
 	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
 	// Use "Just Chatting" — reliably has many live streams at any hour.
-	streams, next, err := api.CategoryStreams(context.Background(), "Just Chatting", 5, "")
+	// Request the API maximum (100) since cursor-based pagination triggers an
+	// integrity challenge that anonymous Go clients cannot solve.
+	streams, _, err := api.CategoryStreams(context.Background(), "Just Chatting", 100, "")
 	if err != nil {
 		t.Fatalf("CategoryStreams: %v", err)
 	}
-	if len(streams) == 0 {
-		t.Fatal("expected at least one stream in Just Chatting, got none")
+	if len(streams) < 30 {
+		t.Fatalf("expected at least 30 streams in Just Chatting at the API maximum, got %d", len(streams))
 	}
 	for _, s := range streams {
 		if s.Login == "" {
@@ -56,8 +59,31 @@ func TestLive_CategoryStreams(t *testing.T) {
 			t.Errorf("stream %q has non-positive viewer count: %d", s.Login, s.ViewerCount)
 		}
 	}
-	t.Logf("got %d streams, first: %q (%d viewers), nextCursor=%q",
-		len(streams), streams[0].DisplayName, streams[0].ViewerCount, next)
+	t.Logf("got %d streams, first: %q (%d viewers)",
+		len(streams), streams[0].DisplayName, streams[0].ViewerCount)
+}
+
+// TestLive_CategoryStreams_PaginationBlocked documents that cursor-based pagination
+// is rejected by Twitch with a "failed integrity check" challenge that requires
+// browser-level JavaScript challenge solving (not feasible from a Go CLI).
+// This test pins the behavior so we notice if Twitch ever relaxes the restriction.
+func TestLive_CategoryStreams_PaginationBlocked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Twitch API test")
+	}
+	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
+	streams, next, err := api.CategoryStreams(context.Background(), "Just Chatting", 5, "")
+	if err != nil {
+		t.Fatalf("CategoryStreams page 1: %v", err)
+	}
+	if next == "" || len(streams) == 0 {
+		t.Skip("no cursor returned; cannot test pagination")
+	}
+	_, _, err = api.CategoryStreams(context.Background(), "Just Chatting", 5, next)
+	if err == nil {
+		t.Fatal("expected integrity-check error on page 2, got nil — Twitch may have relaxed restriction; consider re-enabling Load More UI")
+	}
+	t.Logf("pagination still blocked as expected: %v", err)
 }
 
 func TestLive_SearchChannels(t *testing.T) {

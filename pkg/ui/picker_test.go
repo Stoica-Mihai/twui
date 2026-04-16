@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -66,9 +67,9 @@ func mockFns(state *mockState) DiscoveryFuncs {
 	}
 }
 
-// newTestModel creates a Model with mock callbacks.
+// newTestModel creates a Model with mock callbacks. Auto-refresh disabled.
 func newTestModel(state *mockState) Model {
-	m := NewModel(mockFns(state), DefaultTheme())
+	m := NewModel(mockFns(state), DefaultTheme(), 0)
 	m.width = 120
 	m.height = 30
 	return *m
@@ -632,5 +633,146 @@ func TestModel_CurrentListLen_PerMode(t *testing.T) {
 	m.mode = viewModeIgnored
 	if got := m.currentListLen(); got != 2 {
 		t.Errorf("Ignored len = %d, want 2", got)
+	}
+}
+
+// --- Auto-refresh ---
+
+// NewModel must accept an auto-refresh interval (0 = disabled).
+func TestNewModel_StoresRefreshInterval(t *testing.T) {
+	m := NewModel(mockFns(&mockState{}), DefaultTheme(), 90*time.Second)
+	if m.refreshInterval != 90*time.Second {
+		t.Errorf("refreshInterval = %v, want 90s", m.refreshInterval)
+	}
+	if m.refreshCountdown != 90*time.Second {
+		t.Errorf("refreshCountdown = %v, want 90s (initial)", m.refreshCountdown)
+	}
+}
+
+func TestNewModel_ZeroIntervalDisablesRefresh(t *testing.T) {
+	m := NewModel(mockFns(&mockState{}), DefaultTheme(), 0)
+	if m.refreshInterval != 0 {
+		t.Errorf("refreshInterval = %v, want 0 (disabled)", m.refreshInterval)
+	}
+}
+
+// tickMsg should decrement the countdown and re-arm the tick.
+func TestModel_Tick_DecrementsCountdown(t *testing.T) {
+	m := NewModel(mockFns(&mockState{}), DefaultTheme(), 60*time.Second)
+	m.width, m.height = 120, 30
+	m.refreshCountdown = 5 * time.Second
+
+	newM, cmd := m.Update(tickMsg(time.Now()))
+	m2 := newM.(Model)
+
+	if m2.refreshCountdown != 4*time.Second {
+		t.Errorf("countdown = %v, want 4s", m2.refreshCountdown)
+	}
+	if cmd == nil {
+		t.Error("tickMsg should re-arm the tick command, got nil")
+	}
+}
+
+// When countdown reaches zero, tickMsg should reset countdown and trigger a refresh.
+func TestModel_Tick_FiresRefreshAtZero(t *testing.T) {
+	m := NewModel(mockFns(&mockState{}), DefaultTheme(), 60*time.Second)
+	m.width, m.height = 120, 30
+	m.refreshCountdown = 1 * time.Second
+
+	newM, cmd := m.Update(tickMsg(time.Now()))
+	m2 := newM.(Model)
+
+	if m2.refreshCountdown != 60*time.Second {
+		t.Errorf("countdown = %v, want 60s (reset)", m2.refreshCountdown)
+	}
+	if cmd == nil {
+		t.Error("expected refresh command + re-armed tick, got nil")
+	}
+}
+
+// With interval == 0, ticks must be ignored (no command returned).
+func TestModel_Tick_IgnoredWhenDisabled(t *testing.T) {
+	m := NewModel(mockFns(&mockState{}), DefaultTheme(), 0)
+	m.width, m.height = 120, 30
+
+	_, cmd := m.Update(tickMsg(time.Now()))
+	if cmd != nil {
+		t.Error("tick on disabled refresh should return nil cmd")
+	}
+}
+
+// Refresh result for the WatchList view must preserve cursor by login.
+func TestModel_RefreshResult_PreservesCursorByLogin(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.mode = viewModeWatchList
+	m.watchList = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "a"},
+		{Kind: EntryChannel, Login: "b"},
+		{Kind: EntryChannel, Login: "c"},
+	}
+	m.cursor = 1 // pointing at "b"
+
+	// Refresh returns a reordered list — "b" is now at index 2.
+	newEntries := []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "c"},
+		{Kind: EntryChannel, Login: "a"},
+		{Kind: EntryChannel, Login: "b"},
+	}
+	newM, _ := m.Update(watchListResultMsg{entries: newEntries, refreshed: true})
+	m2 := newM.(Model)
+
+	if m2.cursor != 2 {
+		t.Errorf("cursor = %d, want 2 (should follow login 'b')", m2.cursor)
+	}
+}
+
+// Refresh of category streams must also preserve cursor by login.
+func TestModel_CategoryStreamsRefresh_PreservesCursor(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.mode = viewModeBrowse
+	m.categoryStack = []string{"Just Chatting"}
+	m.categoryList = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "x"},
+		{Kind: EntryChannel, Login: "y"},
+	}
+	m.cursor = 1 // pointing at "y"
+
+	newEntries := []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "z"},
+		{Kind: EntryChannel, Login: "y"},
+		{Kind: EntryChannel, Login: "x"},
+	}
+	newM, _ := m.Update(categoryStreamsResultMsg{
+		category: "Just Chatting",
+		entries:  newEntries,
+		refresh:  true,
+	})
+	m2 := newM.(Model)
+
+	if m2.cursor != 1 {
+		t.Errorf("cursor = %d, want 1 (should follow login 'y')", m2.cursor)
+	}
+}
+
+// Browse-categories refresh must preserve cursor by category name.
+func TestModel_BrowseRefresh_PreservesCursorByCategory(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.mode = viewModeBrowse
+	m.browseList = []DiscoveryEntry{
+		{Kind: EntryCategory, CategoryName: "Just Chatting"},
+		{Kind: EntryCategory, CategoryName: "Fortnite"},
+	}
+	m.cursor = 1
+
+	newEntries := []DiscoveryEntry{
+		{Kind: EntryCategory, CategoryName: "Valorant"},
+		{Kind: EntryCategory, CategoryName: "Fortnite"},
+		{Kind: EntryCategory, CategoryName: "Just Chatting"},
+	}
+	newM, _ := m.Update(browseResultMsg{entries: newEntries, refreshed: true})
+	m2 := newM.(Model)
+
+	if m2.cursor != 1 {
+		t.Errorf("cursor = %d, want 1 (Fortnite at new index 1)", m2.cursor)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -58,6 +59,7 @@ func init() {
 	rootCmd.PersistentFlags().String("player", "mpv", "Media player binary (mpv or vlc)")
 	rootCmd.PersistentFlags().StringSlice("player-args", nil, "Extra arguments for the media player")
 	rootCmd.PersistentFlags().Bool("low-latency", false, "Enable Twitch low-latency mode")
+	rootCmd.PersistentFlags().String("refresh", "", "Auto-refresh interval (e.g. 30s, 1m, 2m30s; 0 = off)")
 }
 
 func initConfig(cmd *cobra.Command) error {
@@ -96,6 +98,7 @@ func initConfig(cmd *cobra.Command) error {
 	bindFlag("twitch-user-agent", "twitch.user-agent")
 	bindFlag("player", "general.player")
 	bindFlag("low-latency", "twitch.low-latency")
+	bindFlag("refresh", "general.refresh")
 
 	return nil
 }
@@ -167,11 +170,15 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					})
 					continue
 				}
+				displayName := md.Author
+				if displayName == "" {
+					displayName = ch
+				}
 				isLive := !md.StartedAt.IsZero()
 				entries = append(entries, ui.DiscoveryEntry{
 					Kind:        ui.EntryChannel,
 					Login:       ch,
-					DisplayName: md.Author,
+					DisplayName: displayName,
 					Title:       md.Title,
 					Category:    md.Category,
 					ViewerCount: md.ViewerCount,
@@ -209,7 +216,9 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		},
 
 		BrowseCategories: func(c context.Context, cursor string) ([]ui.DiscoveryEntry, string, error) {
-			cats, next, err := api.BrowseCategories(c, 50, cursor)
+			// Twitch caps `first` at 100 and rejects cursor-based pagination with an
+			// integrity challenge anonymous clients can't solve. Always request the max.
+			cats, _, err := api.BrowseCategories(c, 100, "")
 			if err != nil {
 				return nil, "", err
 			}
@@ -222,11 +231,13 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					BoxArtURL:       cat.BoxArtURL,
 				})
 			}
-			return entries, next, nil
+			return entries, "", nil
 		},
 
 		CategoryStreams: func(c context.Context, category, cursor string) ([]ui.DiscoveryEntry, string, error) {
-			streams, next, err := api.CategoryStreams(c, category, 30, cursor)
+			// Always request the API maximum (100); cursor-based pagination is blocked
+			// by Twitch's integrity challenge for anonymous clients.
+			streams, _, err := api.CategoryStreams(c, category, 100, "")
 			if err != nil {
 				return nil, "", err
 			}
@@ -246,13 +257,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				}
 				entries = append(entries, e)
 			}
-			if next != "" {
-				entries = append(entries, ui.DiscoveryEntry{
-					Kind:   ui.EntryLoadMore,
-					Cursor: next,
-				})
-			}
-			return entries, next, nil
+			return entries, "", nil
 		},
 
 		Streams: func(c context.Context, channel string) ([]string, error) {
@@ -366,7 +371,13 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		},
 	}
 
-	model := ui.NewModel(fns, theme)
+	refreshStr, _ := cmd.Root().PersistentFlags().GetString("refresh")
+	refreshInterval, err := parseRefreshInterval(refreshStr)
+	if err != nil {
+		return fmt.Errorf("twui: %w", err)
+	}
+
+	model := ui.NewModel(fns, theme, refreshInterval)
 	p := tea.NewProgram(model)
 
 	if _, err := p.Run(); err != nil {
@@ -493,6 +504,26 @@ func streamWeight(name string) float64 {
 	return 1 - altPenalty
 }
 
+// parseRefreshInterval parses a Go duration string for the auto-refresh interval.
+// Empty string and zero return 0 (disabled). Bare integers are rejected. Non-zero
+// values below 30s are rejected to avoid hammering the Twitch API.
+func parseRefreshInterval(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid refresh interval %q (e.g. 30s, 1m, 2m30s)", s)
+	}
+	if d == 0 {
+		return 0, nil
+	}
+	if d < 30*time.Second {
+		return 0, fmt.Errorf("refresh interval must be at least 30s, got %s", d)
+	}
+	return d, nil
+}
+
 // resolveConfigFile returns the config file path, creating the directory if needed.
 func resolveConfigFile() (string, error) {
 	configDir, err := os.UserConfigDir()
@@ -504,6 +535,22 @@ func resolveConfigFile() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "config.toml"), nil
+}
+
+// ensureSection checks that the TOML [section] header for a dotted key exists in lines,
+// appending it if missing. Returns the (possibly extended) lines slice.
+func ensureSection(lines []string, dottedKey string) []string {
+	section, _, ok := strings.Cut(dottedKey, ".")
+	if !ok {
+		return lines
+	}
+	header := "[" + section + "]"
+	for _, l := range lines {
+		if strings.TrimSpace(l) == header {
+			return lines
+		}
+	}
+	return append(lines, "", header)
 }
 
 // extractTomlKey returns the last dotted segment of a "section.key" config key.
@@ -560,14 +607,16 @@ func writeConfigStringKey(path, key, value string) error {
 	found := false
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, tomlKey+" =") || strings.HasPrefix(trimmed, tomlKey+"=") {
+		if strings.HasPrefix(trimmed, tomlKey+" =") || strings.HasPrefix(trimmed, tomlKey+"=") ||
+			strings.HasPrefix(trimmed, key+" =") || strings.HasPrefix(trimmed, key+"=") {
 			lines[i] = newLine
 			found = true
 			break
 		}
 	}
 	if !found {
-		lines = append(lines, fmt.Sprintf("%s = %q", key, value))
+		lines = ensureSection(lines, key)
+		lines = append(lines, newLine)
 	}
 
 	return atomicWriteFile(path, strings.Join(lines, "\n"))
@@ -604,18 +653,21 @@ func writeConfigKey(path, key string, values []string) error {
 	}
 	tomlKey := extractTomlKey(key)
 
+	newLine := tomlKey + " = [" + strings.Join(quoted, ", ") + "]"
 	lines := strings.Split(string(raw), "\n")
 	found := false
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, tomlKey+" =") || strings.HasPrefix(trimmed, tomlKey+"=") {
-			lines[i] = tomlKey + " = [" + strings.Join(quoted, ", ") + "]"
+		if strings.HasPrefix(trimmed, tomlKey+" =") || strings.HasPrefix(trimmed, tomlKey+"=") ||
+			strings.HasPrefix(trimmed, key+" =") || strings.HasPrefix(trimmed, key+"=") {
+			lines[i] = newLine
 			found = true
 			break
 		}
 	}
 	if !found {
-		lines = append(lines, fmt.Sprintf("%s = [%s]", key, strings.Join(quoted, ", ")))
+		lines = ensureSection(lines, key)
+		lines = append(lines, newLine)
 	}
 
 	return atomicWriteFile(path, strings.Join(lines, "\n"))

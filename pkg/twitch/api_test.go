@@ -30,6 +30,7 @@ func (h *hostRewriter) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // newTestAPI creates a TwitchAPI whose HTTP client routes all requests to the
 // given handler, regardless of what URL the code tries to reach.
+// The integrity token is pre-seeded so tests do not receive an extra integrity request.
 func newTestAPI(t *testing.T, handler http.HandlerFunc) *TwitchAPI {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -37,7 +38,10 @@ func newTestAPI(t *testing.T, handler http.HandlerFunc) *TwitchAPI {
 	client := &http.Client{
 		Transport: &hostRewriter{base: srv.URL, rt: http.DefaultTransport},
 	}
-	return NewTwitchAPI(client, "testcid", "testua", nil, nil)
+	api := NewTwitchAPI(client, "testcid", "testua", nil, nil)
+	api.integrityToken = "test-integrity-token"
+	api.integrityExpiry = time.Now().Add(24 * time.Hour)
+	return api
 }
 
 // gqlOK returns a handler that always responds with {"data": <data>}.

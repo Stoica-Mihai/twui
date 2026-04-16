@@ -184,7 +184,7 @@ func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, li
 			"recommendationsContext": map[string]any{
 				"platform": "web",
 			},
-			"requestID":    "",
+			"requestID":    newDeviceID(),
 			"freeformTags": nil,
 			"tags":         []any{},
 		},

@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 )
 
 // viewMode identifies which tab/view is active.
@@ -44,18 +44,21 @@ const (
 // internal Bubble Tea messages
 type (
 	watchListResultMsg struct {
-		entries []DiscoveryEntry
-		err     error
+		entries   []DiscoveryEntry
+		err       error
+		refreshed bool // true when triggered by auto-refresh; cursor preserved
 	}
 	searchResultMsg struct {
-		query   string
-		entries []DiscoveryEntry
-		err     error
+		query     string
+		entries   []DiscoveryEntry
+		err       error
+		refreshed bool
 	}
 	browseResultMsg struct {
 		entries    []DiscoveryEntry
 		nextCursor string
 		err        error
+		refreshed  bool
 	}
 	categoryStreamsResultMsg struct {
 		category   string
@@ -63,7 +66,9 @@ type (
 		nextCursor string
 		err        error
 		appendMode bool
+		refresh    bool // true when triggered by auto-refresh; cursor preserved
 	}
+	tickMsg time.Time
 	qualityResultMsg struct {
 		channel   string
 		qualities []string
@@ -77,6 +82,7 @@ type (
 	searchDebounceMsg struct {
 		query string
 	}
+	titleScrollMsg struct{}
 	statusUpdateMsg struct {
 		channel string
 		status  Status
@@ -124,6 +130,12 @@ type Model struct {
 
 	loading bool
 	err     error
+	notice  string // transient one-line message shown in footer
+
+	// auto-refresh
+	refreshInterval  time.Duration // 0 = disabled
+	refreshCountdown time.Duration
+	refreshing       bool
 
 	// overlays
 	overlay        overlayMode
@@ -142,6 +154,7 @@ type Model struct {
 
 	// title scroll
 	titleScrollOffset int
+	titleScrollDir    int // +1 forward, -1 backward
 
 	// global ctx
 	cancel context.CancelFunc
@@ -149,20 +162,38 @@ type Model struct {
 }
 
 // NewModel creates a new Model.
-func NewModel(fns DiscoveryFuncs, theme Theme) *Model {
+func NewModel(fns DiscoveryFuncs, theme Theme, refreshInterval time.Duration) *Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Model{
-		fns:      fns,
-		styles:   buildStyles(theme),
-		sessions: make(map[string]*playbackSession),
-		ctx:      ctx,
-		cancel:   cancel,
+		fns:              fns,
+		styles:           buildStyles(theme),
+		sessions:         make(map[string]*playbackSession),
+		ctx:              ctx,
+		cancel:           cancel,
+		refreshInterval:  refreshInterval,
+		refreshCountdown: refreshInterval,
 	}
+}
+
+func titleScrollCmd() tea.Cmd {
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return titleScrollMsg{}
+	})
+}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 // Init implements tea.Model (bubbletea v2: returns tea.Cmd).
 func (m Model) Init() tea.Cmd {
-	return m.loadWatchList()
+	cmds := []tea.Cmd{m.loadWatchList(), titleScrollCmd()}
+	if m.refreshInterval > 0 {
+		cmds = append(cmds, tickCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model.
@@ -183,10 +214,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouseWheel(msg)
 
 	case watchListResultMsg:
-		m.loading = false
-		m.err = msg.err
+		if msg.refreshed {
+			m.refreshing = false
+		} else {
+			m.loading = false
+			m.err = msg.err
+		}
 		if msg.err == nil {
+			prev := m.cursorLogin(viewModeWatchList)
 			m.watchList = m.filterIgnored(msg.entries)
+			if msg.refreshed && m.mode == viewModeWatchList {
+				m.cursor = findEntryByLogin(m.watchList, prev)
+			}
 		}
 		return m, nil
 
@@ -194,38 +233,74 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.query != m.searchQuery {
 			return m, nil
 		}
-		m.loading = false
-		m.err = msg.err
+		if msg.refreshed {
+			m.refreshing = false
+		} else {
+			m.loading = false
+			m.err = msg.err
+		}
 		if msg.err == nil {
+			prev := m.cursorLogin(viewModeSearch)
 			m.searchList = m.filterIgnored(msg.entries)
-			m.cursor = 0
+			if msg.refreshed && m.mode == viewModeSearch {
+				m.cursor = findEntryByLogin(m.searchList, prev)
+			} else {
+				m.cursor = 0
+			}
 		}
 		return m, nil
 
 	case browseResultMsg:
-		m.loading = false
-		m.err = msg.err
+		if msg.refreshed {
+			m.refreshing = false
+		} else {
+			m.loading = false
+			m.err = msg.err
+		}
 		if msg.err == nil {
+			prevCat := m.cursorCategory()
 			m.browseList = msg.entries
 			m.browseNextCursor = msg.nextCursor
 			if m.mode == viewModeBrowse && len(m.categoryStack) == 0 {
-				m.cursor = 0
+				if msg.refreshed {
+					m.cursor = findCategoryByName(m.browseList, prevCat)
+				} else {
+					m.cursor = 0
+				}
 			}
 		}
 		return m, nil
 
 	case categoryStreamsResultMsg:
-		m.loading = false
-		m.err = msg.err
-		if msg.err == nil {
-			filtered := m.filterIgnored(msg.entries)
-			if msg.appendMode {
-				m.categoryList = append(m.categoryList, filtered...)
-			} else {
-				m.categoryList = filtered
-				m.cursor = 0
+		if msg.refresh {
+			m.refreshing = false
+		} else {
+			m.loading = false
+		}
+		if msg.appendMode {
+			if n := len(m.categoryList); n > 0 && m.categoryList[n-1].Kind == EntryLoadMore {
+				m.categoryList = m.categoryList[:n-1]
 			}
-			m.categoryCursor = msg.nextCursor
+			if msg.err != nil {
+				m.notice = fmt.Sprintf("Load more failed: %v", msg.err)
+			} else {
+				m.categoryList = append(m.categoryList, m.filterIgnored(msg.entries)...)
+				m.categoryCursor = msg.nextCursor
+			}
+		} else {
+			if !msg.refresh {
+				m.err = msg.err
+			}
+			if msg.err == nil {
+				prev := m.cursorLogin(viewModeBrowse)
+				m.categoryList = m.filterIgnored(msg.entries)
+				if msg.refresh && m.mode == viewModeBrowse && len(m.categoryStack) > 0 {
+					m.cursor = findEntryByLogin(m.categoryList, prev)
+				} else {
+					m.cursor = 0
+				}
+				m.categoryCursor = msg.nextCursor
+			}
 		}
 		return m, nil
 
@@ -254,6 +329,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchQuery = msg.query
 		return m, m.runSearch(msg.query)
 
+	case tickMsg:
+		if m.refreshInterval == 0 {
+			return m, nil
+		}
+		m.refreshCountdown -= time.Second
+		if m.refreshCountdown <= 0 {
+			m.refreshCountdown = m.refreshInterval
+			m.refreshing = true
+			if cmd := m.refreshCurrentView(); cmd != nil {
+				return m, tea.Batch(tickCmd(), cmd)
+			}
+		}
+		return m, tickCmd()
+
 	case statusUpdateMsg:
 		if s, ok := m.sessions[msg.channel]; ok && s.gen == msg.gen {
 			if msg.done {
@@ -266,6 +355,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitPlayback(s.ctx, s.ch, msg.channel, msg.gen)
 		}
 		return m, nil
+
+	case titleScrollMsg:
+		if e := m.currentEntry(); e != nil && e.IsLive && e.Title != "" {
+			title := sanitizeText(e.Title)
+			titleW := m.width - 54 // colFixed from renderChannelList
+			if titleW < 1 {
+				titleW = 1
+			}
+			if uniseg.StringWidth(title) > titleW {
+				gr := uniseg.NewGraphemes(title)
+				var clusters []string
+				for gr.Next() {
+					clusters = append(clusters, gr.Str())
+				}
+				maxScroll := len(clusters) - 1
+				for i := range clusters {
+					if uniseg.StringWidth(strings.Join(clusters[i:], "")) <= titleW {
+						maxScroll = i
+						break
+					}
+				}
+				if maxScroll > 0 {
+					dir := m.titleScrollDir
+					if dir == 0 {
+						dir = 1
+					}
+					m.titleScrollOffset += dir
+					if m.titleScrollOffset >= maxScroll {
+						m.titleScrollOffset = maxScroll
+						m.titleScrollDir = -1
+					} else if m.titleScrollOffset <= 0 {
+						m.titleScrollOffset = 0
+						m.titleScrollDir = 1
+					} else {
+						m.titleScrollDir = dir
+					}
+				}
+			}
+		}
+		return m, titleScrollCmd()
 	}
 
 	return m, nil
@@ -372,26 +501,29 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 		return []string{"  No channels."}
 	}
 
-	colStatus := 2
-	colFav := 2
-	colViewers := 8
-	colUptime := 8
-	colCategory := 14
-	colTitle := m.width - colStatus - colFav - colViewers - colUptime - colCategory - 22
+	// Column widths; 4 separators of 2 spaces each between the 5 data columns.
+	// Prefix: status(1) + sp(1) + fav(1) + sp(1) = 4
+	// Fixed total: 4 + 16 + 2 + 6 + 2 + 6 + 2 + 14 + 2 = 54; title gets the rest.
+	const (
+		colStatus   = 2
+		colFav      = 2
+		colChannel  = 16
+		colViewers  = 6
+		colUptime   = 6
+		colCategory = 14
+		colFixed    = 54
+	)
+	colTitle := m.width - colFixed
 	if colTitle < 10 {
 		colTitle = 10
 	}
-	colChannel := m.width - colStatus - colFav - colViewers - colUptime - colCategory - colTitle - 4
-	if colChannel < 8 {
-		colChannel = 8
-	}
 
 	header := m.styles.title.Render(
-		strings.Repeat(" ", colStatus+colFav+2) +
-			pad("Channel", colChannel) +
-			pad("Viewers", colViewers) +
-			pad("Uptime", colUptime) +
-			pad("Category", colCategory) +
+		strings.Repeat(" ", colStatus+colFav) +
+			pad("Channel", colChannel) + "  " +
+			pad("Viewers", colViewers) + "  " +
+			pad("Uptime", colUptime) + "  " +
+			pad("Category", colCategory) + "  " +
 			pad("Title", colTitle),
 	)
 
@@ -408,29 +540,43 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 
 		selected := i == m.cursor
 
-		statusStr := " "
+		if e.Kind == EntryLoadMore {
+			label := padRight("  ↓  Load more  (Enter)", m.width)
+			if selected {
+				lines = append(lines, m.styles.selected.Render(label))
+			} else {
+				lines = append(lines, m.styles.title.Render(label))
+			}
+			continue
+		}
+
+		statusCh := " "
 		if sess, ok := m.sessions[e.Login]; ok {
 			switch sess.status {
 			case StatusPlaying:
-				statusStr = m.styles.playing.Render("▶")
+				statusCh = "▶"
 			case StatusAdBreak:
-				statusStr = m.styles.adBreak.Render("◐")
+				statusCh = "◐"
 			case StatusWaiting:
-				statusStr = m.styles.waiting.Render("○")
+				statusCh = "○"
 			case StatusReconnecting:
-				statusStr = m.styles.reconnecting.Render("⟳")
+				statusCh = "⟳"
 			}
 		}
 
-		favStr := " "
+		favCh := " "
 		if e.IsFavorite {
-			favStr = m.styles.favorite.Render("★")
+			favCh = "★"
 		}
 
-		chanStr := cellTruncate(e.DisplayName, colChannel)
+		displayName := e.DisplayName
+		if displayName == "" {
+			displayName = e.Login
+		}
+		chanStr := cellTruncate(displayName, colChannel)
 
 		viewStr := ""
-		if e.IsLive && e.ViewerCount > 0 {
+		if e.IsLive {
 			viewStr = formatViewers(e.ViewerCount)
 		}
 
@@ -439,30 +585,60 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 			uptimeStr = formatUptime(time.Since(e.StartedAt))
 		}
 
-		catStr := cellTruncate(e.Category, colCategory)
-		titleFull := e.Title
-		titleStr := cellTruncate(titleFull, colTitle)
-		if selected && runewidth.StringWidth(titleFull) > colTitle {
-			titleStr = scrollTitle(titleFull, colTitle, m.titleScrollOffset)
-		}
+		catStr := pad(cellTruncate(e.Category, colCategory), colCategory)
 
-		row := statusStr + " " + favStr + " " +
-			pad(chanStr, colChannel) +
-			pad(viewStr, colViewers) +
-			pad(uptimeStr, colUptime)
-
-		if e.IsLive {
-			row += m.styles.category.Render(pad(catStr, colCategory))
-			row += m.styles.live.Render(pad(titleStr, colTitle))
+		var titleStr string
+		if !e.IsLive {
+			titleStr = padRight("(offline)", colTitle)
+		} else if e.IsLive && e.Title != "" {
+			title := sanitizeText(e.Title)
+			if uniseg.StringWidth(title) <= colTitle {
+				titleStr = padRight(title, colTitle)
+			} else if selected {
+				gr := uniseg.NewGraphemes(title)
+				var clusters []string
+				for gr.Next() {
+					clusters = append(clusters, gr.Str())
+				}
+				offset := m.titleScrollOffset
+				if offset >= len(clusters) {
+					offset = 0
+				}
+				var sb strings.Builder
+				w := 0
+				for _, c := range clusters[offset:] {
+					gw := uniseg.StringWidth(c)
+					if w+gw > colTitle {
+						break
+					}
+					sb.WriteString(c)
+					w += gw
+				}
+				titleStr = padRight(sb.String(), colTitle)
+			} else {
+				titleStr = padRight(cellTruncate(title, colTitle), colTitle)
+			}
 		} else {
-			row += m.styles.offline.Render(pad(catStr, colCategory) + pad(titleStr, colTitle))
+			titleStr = strings.Repeat(" ", colTitle)
 		}
 
-		if selected {
-			row = m.styles.selected.Render(padRight(stripANSI(row), m.width))
-		}
+		row := padRight(
+			statusCh+" "+favCh+" "+
+				pad(chanStr, colChannel)+"  "+
+				pad(viewStr, colViewers)+"  "+
+				pad(uptimeStr, colUptime)+"  "+
+				catStr+"  "+titleStr,
+			m.width,
+		)
 
-		lines = append(lines, row)
+		switch {
+		case selected:
+			lines = append(lines, m.styles.selected.Render(row))
+		case e.IsLive:
+			lines = append(lines, m.styles.live.Render(row))
+		default:
+			lines = append(lines, m.styles.offline.Render(row))
+		}
 	}
 
 	return lines
@@ -535,6 +711,9 @@ func (m Model) renderSearchView(height int) []string {
 }
 
 func (m Model) renderFooter() string {
+	if m.notice != "" {
+		return m.styles.live.Render(cellTruncate("  "+m.notice, m.width))
+	}
 	var hints string
 	switch {
 	case m.mode == viewModeSearch && m.searching:
@@ -671,6 +850,7 @@ func (m Model) renderHelpOverlay() string {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.notice = "" // clear any transient notice on key press
 	if m.overlay == overlayHelp {
 		switch msg.String() {
 		case "?", "esc", "q", "Q":
@@ -707,11 +887,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.mode = (m.mode + 1) % 4
 		m.cursor = 0
+		m.titleScrollOffset = 0
+		m.titleScrollDir = 1
 		return m, m.loadCurrentView()
 
 	case "shift+tab":
 		m.mode = (m.mode + 3) % 4
 		m.cursor = 0
+		m.titleScrollOffset = 0
+		m.titleScrollDir = 1
 		return m, m.loadCurrentView()
 
 	case "j", "down":
@@ -732,14 +916,20 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "g":
 		m.cursor = 0
+		m.titleScrollOffset = 0
+		m.titleScrollDir = 1
 		return m, nil
 
 	case "G":
 		m.cursor = m.currentListLen() - 1
+		m.titleScrollOffset = 0
+		m.titleScrollDir = 1
 		return m, nil
 
 	case "home":
 		m.cursor = 0
+		m.titleScrollOffset = 0
+		m.titleScrollDir = 1
 		return m, nil
 
 	case "end":
@@ -747,6 +937,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if n > 0 {
 			m.cursor = n - 1
 		}
+		m.titleScrollOffset = 0
+		m.titleScrollDir = 1
 		return m, nil
 
 	case "enter":
@@ -1111,6 +1303,8 @@ func (m Model) moveCursor(delta int) Model {
 	if m.cursor >= n {
 		m.cursor = n - 1
 	}
+	m.titleScrollOffset = 0
+	m.titleScrollDir = 1
 	return m
 }
 
@@ -1206,6 +1400,108 @@ func (m Model) loadCurrentView() tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// refreshCurrentView returns a cmd that re-fetches the active view's data,
+// flagging the result as a refresh so cursor position is preserved.
+func (m Model) refreshCurrentView() tea.Cmd {
+	ctx := m.ctx
+	fns := m.fns
+	switch m.mode {
+	case viewModeWatchList:
+		return func() tea.Msg {
+			c, cancel := context.WithTimeout(ctx, timeoutBrowse)
+			defer cancel()
+			entries, err := fns.WatchList(c)
+			return watchListResultMsg{entries: entries, err: err, refreshed: true}
+		}
+	case viewModeBrowse:
+		if len(m.categoryStack) > 0 {
+			category := m.categoryStack[len(m.categoryStack)-1]
+			return func() tea.Msg {
+				c, cancel := context.WithTimeout(ctx, timeoutBrowse)
+				defer cancel()
+				entries, next, err := fns.CategoryStreams(c, category, "")
+				return categoryStreamsResultMsg{category: category, entries: entries, nextCursor: next, err: err, refresh: true}
+			}
+		}
+		return func() tea.Msg {
+			c, cancel := context.WithTimeout(ctx, timeoutBrowse)
+			defer cancel()
+			entries, next, err := fns.BrowseCategories(c, "")
+			return browseResultMsg{entries: entries, nextCursor: next, err: err, refreshed: true}
+		}
+	case viewModeSearch:
+		query := m.searchQuery
+		if query == "" {
+			return nil
+		}
+		return func() tea.Msg {
+			c, cancel := context.WithTimeout(ctx, timeoutSearch)
+			defer cancel()
+			entries, err := fns.Search(c, query)
+			return searchResultMsg{query: query, entries: entries, err: err, refreshed: true}
+		}
+	}
+	return nil
+}
+
+// cursorLogin returns the login of the entry under the cursor in the given view,
+// or "" if no entry or not a channel entry. Used to remember position across refreshes.
+func (m Model) cursorLogin(mode viewMode) string {
+	var list []DiscoveryEntry
+	switch mode {
+	case viewModeWatchList:
+		list = m.watchList
+	case viewModeBrowse:
+		list = m.categoryList
+	case viewModeSearch:
+		list = m.searchList
+	}
+	if m.cursor < 0 || m.cursor >= len(list) {
+		return ""
+	}
+	if list[m.cursor].Kind != EntryChannel {
+		return ""
+	}
+	return list[m.cursor].Login
+}
+
+// cursorCategory returns the CategoryName under the cursor in the browse top-level view.
+func (m Model) cursorCategory() string {
+	if m.cursor < 0 || m.cursor >= len(m.browseList) {
+		return ""
+	}
+	if m.browseList[m.cursor].Kind != EntryCategory {
+		return ""
+	}
+	return m.browseList[m.cursor].CategoryName
+}
+
+// findEntryByLogin returns the index of the channel entry with matching login, or 0 if not found.
+func findEntryByLogin(entries []DiscoveryEntry, login string) int {
+	if login == "" {
+		return 0
+	}
+	for i, e := range entries {
+		if e.Kind == EntryChannel && e.Login == login {
+			return i
+		}
+	}
+	return 0
+}
+
+// findCategoryByName returns the index of the category entry with matching name, or 0 if not found.
+func findCategoryByName(entries []DiscoveryEntry, name string) int {
+	if name == "" {
+		return 0
+	}
+	for i, e := range entries {
+		if e.Kind == EntryCategory && e.CategoryName == name {
+			return i
+		}
+	}
+	return 0
 }
 
 func (m Model) runSearch(query string) tea.Cmd {
@@ -1308,10 +1604,21 @@ func calcVisibleStart(cursor, height int) int {
 	return max(0, cursor-(height-3))
 }
 
+// sanitizeText replaces newlines and other control characters with spaces so
+// stream titles fetched from the API never cause unexpected line breaks.
+func sanitizeText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
 // --- Formatting helpers ---
 
 func pad(s string, width int) string {
-	w := runewidth.StringWidth(s)
+	w := uniseg.StringWidth(s)
 	if w >= width {
 		return s
 	}
@@ -1319,7 +1626,7 @@ func pad(s string, width int) string {
 }
 
 func padRight(s string, width int) string {
-	w := runewidth.StringWidth(stripANSI(s))
+	w := uniseg.StringWidth(stripANSI(s))
 	if w >= width {
 		return s
 	}
@@ -1354,51 +1661,24 @@ func cellTruncate(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if runewidth.StringWidth(s) <= width {
+	if uniseg.StringWidth(s) <= width {
 		return s
 	}
 	w := 0
 	var sb strings.Builder
-	for _, r := range s {
-		rw := runewidth.RuneWidth(r)
-		if w+rw > width-1 {
+	gr := uniseg.NewGraphemes(s)
+	for gr.Next() {
+		gw := gr.Width()
+		if w+gw > width-1 { // leave 1 cell for the ellipsis
 			break
 		}
-		sb.WriteRune(r)
-		w += rw
+		sb.WriteString(gr.Str())
+		w += gw
 	}
 	sb.WriteRune('…')
 	return sb.String()
 }
 
-func scrollTitle(s string, width, offset int) string {
-	runes := []rune(s)
-	n := len(runes)
-	if n == 0 || width <= 0 {
-		return strings.Repeat(" ", width)
-	}
-	stride := n + 4
-	start := offset % stride
-	if start >= n {
-		start = 0
-	}
-
-	var sb strings.Builder
-	w := 0
-	for i := start; i < n && w < width; i++ {
-		rw := runewidth.RuneWidth(runes[i])
-		if w+rw > width {
-			break
-		}
-		sb.WriteRune(runes[i])
-		w += rw
-	}
-	result := sb.String()
-	if runewidth.StringWidth(result) < width {
-		result += strings.Repeat(" ", width-runewidth.StringWidth(result))
-	}
-	return result
-}
 
 func formatViewers(n int) string {
 	if n >= 1000 {
@@ -1426,7 +1706,7 @@ func overlayOn(base, overlay string, width, height int) string {
 	for _, l := range overlayLines {
 		// Strip ANSI for width calculation
 		plain := stripANSI(l)
-		if w := runewidth.StringWidth(plain); w > oWidth {
+		if w := uniseg.StringWidth(plain); w > oWidth {
 			oWidth = w
 		}
 	}
