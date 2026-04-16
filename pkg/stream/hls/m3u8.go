@@ -3,7 +3,7 @@ package hls
 import (
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -170,7 +170,7 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			var err error
 			playlist.TargetDuration, err = strconv.ParseFloat(strings.TrimSpace(val), 64)
 			if err != nil {
-				log.Printf("hls: m3u8: invalid target duration %q: %v", val, err)
+				slog.Warn("hls m3u8: invalid target duration", "value", val, "err", err)
 			}
 
 		case strings.HasPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"):
@@ -178,7 +178,7 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			var err error
 			mediaSequence, err = strconv.Atoi(strings.TrimSpace(val))
 			if err != nil {
-				log.Printf("hls: m3u8: invalid media sequence %q: %v", val, err)
+				slog.Warn("hls m3u8: invalid media sequence", "value", val, "err", err)
 			}
 			playlist.MediaSequence = mediaSequence
 
@@ -190,7 +190,7 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			var err error
 			currentDuration, err = strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
 			if err != nil {
-				log.Printf("hls: m3u8: invalid segment duration %q: %v", parts[0], err)
+				slog.Warn("hls m3u8: invalid segment duration", "value", parts[0], "err", err)
 			}
 			if len(parts) > 1 {
 				currentTitle = strings.TrimSpace(parts[1])
@@ -217,7 +217,7 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 					var err error
 					k.IV, err = hex.DecodeString(ivStr)
 					if err != nil {
-						log.Printf("hls: m3u8: invalid encryption IV %q: %v", rawIV, err)
+						slog.Warn("hls m3u8: invalid encryption IV", "value", rawIV, "err", err)
 					}
 				}
 				currentKey = k
@@ -397,7 +397,7 @@ func parseByteRange(s string) *ByteRange {
 		var err error
 		br.Offset, err = strconv.Atoi(strings.TrimSpace(parts[1]))
 		if err != nil {
-			log.Printf("hls: m3u8: invalid byte range offset %q: %v", parts[1], err)
+			slog.Warn("hls m3u8: invalid byte range offset", "value", parts[1], "err", err)
 		}
 	}
 	return br
