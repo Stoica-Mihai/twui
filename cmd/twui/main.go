@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -16,7 +17,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
 	"github.com/mcs/twui/pkg/notify"
@@ -92,10 +95,7 @@ func initConfig(cmd *cobra.Command) error {
 
 	// Apply flag overrides from config when not explicitly set on CLI.
 	bindFlag := func(flag, viperKey string) {
-		f := cmd.Root().PersistentFlags().Lookup(flag)
-		if f != nil && !f.Changed && viper.IsSet(viperKey) {
-			_ = f.Value.Set(viper.GetString(viperKey))
-		}
+		applyFlagFromViper(cmd.Root().PersistentFlags().Lookup(flag), viperKey)
 	}
 	bindFlag("twitch-client-id", "twitch.client-id")
 	bindFlag("twitch-user-agent", "twitch.user-agent")
@@ -621,6 +621,23 @@ func parseRefreshInterval(s string) (time.Duration, error) {
 	return d, nil
 }
 
+// applyFlagFromViper copies a Viper key into a cobra/pflag flag when the user
+// hasn't set it on the CLI. Logs a warning if the flag rejects the value so
+// bad config values don't silently fall through to default behavior. Some
+// pflag types (e.g., durationValue) clobber the target before returning the
+// parse error; we snapshot and restore on failure so the CLI default survives.
+func applyFlagFromViper(f *pflag.Flag, viperKey string) {
+	if f == nil || f.Changed || !viper.IsSet(viperKey) {
+		return
+	}
+	val := viper.GetString(viperKey)
+	prev := f.Value.String()
+	if err := f.Value.Set(val); err != nil {
+		slog.Warn("invalid config value", "key", viperKey, "value", val, "err", err)
+		_ = f.Value.Set(prev)
+	}
+}
+
 // resolveConfigFile returns the config file path, creating the directory if needed.
 func resolveConfigFile() (string, error) {
 	configDir, err := os.UserConfigDir()
@@ -632,30 +649,6 @@ func resolveConfigFile() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "config.toml"), nil
-}
-
-// ensureSection checks that the TOML [section] header for a dotted key exists in lines,
-// appending it if missing. Returns the (possibly extended) lines slice.
-func ensureSection(lines []string, dottedKey string) []string {
-	section, _, ok := strings.Cut(dottedKey, ".")
-	if !ok {
-		return lines
-	}
-	header := "[" + section + "]"
-	for _, l := range lines {
-		if strings.TrimSpace(l) == header {
-			return lines
-		}
-	}
-	return append(lines, "", header)
-}
-
-// extractTomlKey returns the last dotted segment of a "section.key" config key.
-func extractTomlKey(key string) string {
-	if _, after, ok := strings.Cut(key, "."); ok {
-		return after
-	}
-	return key
 }
 
 func atomicWriteFile(path, content string) error {
@@ -690,33 +683,16 @@ func writeConfigString(key, value string) {
 	}
 }
 
-// writeConfigStringKey does a targeted in-place text replacement of a string config key.
+// writeConfigStringKey sets a string value at a dotted TOML key and writes the file.
+// Parses existing TOML into a map, updates the key, and marshals the result —
+// unknown sections and sibling keys are preserved.
 func writeConfigStringKey(path, key, value string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	m, err := loadTomlMap(path)
+	if err != nil {
 		return err
 	}
-
-	tomlKey := extractTomlKey(key)
-
-	newLine := fmt.Sprintf("%s = %q", tomlKey, value)
-	lines := strings.Split(string(raw), "\n")
-	found := false
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, tomlKey+" =") || strings.HasPrefix(trimmed, tomlKey+"=") ||
-			strings.HasPrefix(trimmed, key+" =") || strings.HasPrefix(trimmed, key+"=") {
-			lines[i] = newLine
-			found = true
-			break
-		}
-	}
-	if !found {
-		lines = ensureSection(lines, key)
-		lines = append(lines, newLine)
-	}
-
-	return atomicWriteFile(path, strings.Join(lines, "\n"))
+	setByDottedKey(m, key, value)
+	return marshalAndWriteAtomic(path, m)
 }
 
 // writeConfigList persists a config list value to the config file.
@@ -736,38 +712,65 @@ func writeConfigList(key string, values []string) {
 	}
 }
 
-// writeConfigKey does a targeted in-place text replacement of a config key.
-// Handles TOML array format.
+// writeConfigKey sets a string-list value at a dotted TOML key and writes the file.
+// Parses existing TOML into a map, updates the key, and marshals the result —
+// unknown sections and sibling keys are preserved.
 func writeConfigKey(path, key string, values []string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	m, err := loadTomlMap(path)
+	if err != nil {
 		return err
 	}
+	setByDottedKey(m, key, values)
+	return marshalAndWriteAtomic(path, m)
+}
 
-	quoted := make([]string, len(values))
-	for i, v := range values {
-		quoted[i] = fmt.Sprintf("%q", v)
-	}
-	tomlKey := extractTomlKey(key)
-
-	newLine := tomlKey + " = [" + strings.Join(quoted, ", ") + "]"
-	lines := strings.Split(string(raw), "\n")
-	found := false
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, tomlKey+" =") || strings.HasPrefix(trimmed, tomlKey+"=") ||
-			strings.HasPrefix(trimmed, key+" =") || strings.HasPrefix(trimmed, key+"=") {
-			lines[i] = newLine
-			found = true
-			break
+// loadTomlMap reads a TOML file into a nested map. A missing or empty file
+// yields an empty map rather than an error — the caller is about to write to it.
+func loadTomlMap(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{}, nil
 		}
+		return nil, err
 	}
-	if !found {
-		lines = ensureSection(lines, key)
-		lines = append(lines, newLine)
+	if len(raw) == 0 {
+		return map[string]any{}, nil
 	}
+	m := map[string]any{}
+	if err := toml.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
 
-	return atomicWriteFile(path, strings.Join(lines, "\n"))
+// setByDottedKey walks a nested map following dotted path segments, creating
+// intermediate tables as needed, and assigns value at the leaf.
+func setByDottedKey(m map[string]any, dotted string, value any) {
+	parts := strings.Split(dotted, ".")
+	cur := m
+	for i, p := range parts {
+		if i == len(parts)-1 {
+			cur[p] = value
+			return
+		}
+		next, ok := cur[p].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			cur[p] = next
+		}
+		cur = next
+	}
+}
+
+// marshalAndWriteAtomic serializes the map as TOML and writes it atomically.
+func marshalAndWriteAtomic(path string, m map[string]any) error {
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf)
+	if err := enc.Encode(m); err != nil {
+		return err
+	}
+	return atomicWriteFile(path, buf.String())
 }
 
 func toSet(list []string) map[string]bool {

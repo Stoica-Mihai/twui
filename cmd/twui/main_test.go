@@ -2,12 +2,16 @@ package main
 
 import (
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 
 	"github.com/mcs/twui/pkg/stream"
 )
@@ -171,6 +175,12 @@ func TestToSet_Dedup(t *testing.T) {
 	}
 }
 
+// containsValue reports whether content contains a TOML-quoted string value.
+// go-toml/v2 emits literal strings ('value') for plain content; both forms are valid.
+func containsValue(content, value string) bool {
+	return strings.Contains(content, `"`+value+`"`) || strings.Contains(content, `'`+value+`'`)
+}
+
 // --- writeConfigKey ---
 
 func TestWriteConfigKey_NewFile(t *testing.T) {
@@ -184,10 +194,10 @@ func TestWriteConfigKey_NewFile(t *testing.T) {
 
 	raw, _ := os.ReadFile(path)
 	content := string(raw)
-	if !strings.Contains(content, `"alice"`) {
+	if !containsValue(content, "alice") {
 		t.Errorf("config file missing alice: %s", content)
 	}
-	if !strings.Contains(content, `"bob"`) {
+	if !containsValue(content, "bob") {
 		t.Errorf("config file missing bob: %s", content)
 	}
 }
@@ -206,10 +216,10 @@ func TestWriteConfigKey_ReplaceExisting(t *testing.T) {
 
 	raw, _ := os.ReadFile(path)
 	content := string(raw)
-	if strings.Contains(content, `"old"`) {
+	if containsValue(content, "old") {
 		t.Errorf("old value should be replaced: %s", content)
 	}
-	if !strings.Contains(content, `"new1"`) || !strings.Contains(content, `"new2"`) {
+	if !containsValue(content, "new1") || !containsValue(content, "new2") {
 		t.Errorf("new values missing from config: %s", content)
 	}
 }
@@ -228,7 +238,7 @@ func TestWriteConfigKey_AppendWhenMissing(t *testing.T) {
 
 	raw, _ := os.ReadFile(path)
 	content := string(raw)
-	if !strings.Contains(content, `"only"`) {
+	if !containsValue(content, "only") {
 		t.Errorf("appended value missing: %s", content)
 	}
 }
@@ -236,14 +246,14 @@ func TestWriteConfigKey_AppendWhenMissing(t *testing.T) {
 func TestWriteConfigKey_EmptyList(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	_ = os.WriteFile(path, []byte("channels = [\"old\"]\n"), 0600)
+	_ = os.WriteFile(path, []byte("[twitch]\nchannels = [\"old\"]\n"), 0600)
 
 	err := writeConfigKey(path, "twitch.channels", []string{})
 	if err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 	raw, _ := os.ReadFile(path)
-	if strings.Contains(string(raw), `"old"`) {
+	if containsValue(string(raw), "old") {
 		t.Errorf("empty list should clear old value: %s", string(raw))
 	}
 }
@@ -324,7 +334,7 @@ func TestWriteConfigKey_NoKeyDuplication(t *testing.T) {
 	if n := strings.Count(content, "channels"); n != 1 {
 		t.Errorf("expected exactly 1 'channels' line, got %d in:\n%s", n, content)
 	}
-	if !strings.Contains(content, `"bob"`) {
+	if !containsValue(content, "bob") {
 		t.Errorf("second write value missing: %s", content)
 	}
 }
@@ -341,10 +351,10 @@ func TestWriteConfigKey_FixesDottedKey(t *testing.T) {
 
 	raw, _ := os.ReadFile(path)
 	content := string(raw)
-	if strings.Contains(content, `"old"`) {
+	if containsValue(content, "old") {
 		t.Errorf("old value should be replaced: %s", content)
 	}
-	if !strings.Contains(content, `"fixed"`) {
+	if !containsValue(content, "fixed") {
 		t.Errorf("new value missing: %s", content)
 	}
 	if n := strings.Count(content, "channels"); n != 1 {
@@ -367,8 +377,8 @@ func TestWriteConfigKey_AppendsUnderSection(t *testing.T) {
 	if strings.Contains(content, "twitch.channels") {
 		t.Errorf("should use short form, got dotted key in:\n%s", content)
 	}
-	if !strings.Contains(content, `channels = ["a"]`) {
-		t.Errorf("expected short form channels line, got:\n%s", content)
+	if !containsValue(content, "a") {
+		t.Errorf("expected channels line to contain 'a', got:\n%s", content)
 	}
 }
 
@@ -385,8 +395,8 @@ func TestWriteConfigKey_CreatesSection(t *testing.T) {
 	if !strings.Contains(content, "[twitch]") {
 		t.Errorf("section header missing in:\n%s", content)
 	}
-	if !strings.Contains(content, `channels = ["new"]`) {
-		t.Errorf("short form key missing in:\n%s", content)
+	if !containsValue(content, "new") {
+		t.Errorf("expected channels line to contain 'new': %s", content)
 	}
 	if strings.Contains(content, "twitch.channels") {
 		t.Errorf("should not use dotted key in:\n%s", content)
@@ -418,7 +428,7 @@ func TestWriteConfigStringKey_FixesDottedKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	// Simulate buggy file.
-	_ = os.WriteFile(path, []byte("theming.theme = \"old\"\n"), 0600)
+	_ = os.WriteFile(path, []byte("theming.theme = \"old-theme\"\n"), 0600)
 
 	if err := writeConfigStringKey(path, "theming.theme", "fixed"); err != nil {
 		t.Fatalf("writeConfigStringKey: %v", err)
@@ -426,7 +436,7 @@ func TestWriteConfigStringKey_FixesDottedKey(t *testing.T) {
 
 	raw, _ := os.ReadFile(path)
 	content := string(raw)
-	if strings.Contains(content, "old") {
+	if strings.Contains(content, "old-theme") {
 		t.Errorf("old value should be replaced: %s", content)
 	}
 	if !strings.Contains(content, "fixed") {
@@ -434,6 +444,103 @@ func TestWriteConfigStringKey_FixesDottedKey(t *testing.T) {
 	}
 	if n := strings.Count(content, "theme"); n != 1 {
 		t.Errorf("expected 1 theme line, got %d in:\n%s", n, content)
+	}
+}
+
+// --- B2 regression tests: cases the old text-replace writer broke ---
+
+// Multi-line arrays must round-trip correctly. The old writer found the first
+// line containing the key and replaced it, leaving the tail of the array behind.
+func TestWriteConfigKey_MultilineArrayRewrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := "[twitch]\nchannels = [\n  \"alice\",\n  \"bob\",\n]\n"
+	_ = os.WriteFile(path, []byte(initial), 0600)
+
+	if err := writeConfigKey(path, "twitch.channels", []string{"carol"}); err != nil {
+		t.Fatalf("writeConfigKey: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if containsValue(content, "alice") || containsValue(content, "bob") {
+		t.Errorf("old array entries should be replaced, got:\n%s", content)
+	}
+	if !containsValue(content, "carol") {
+		t.Errorf("new value missing: %s", content)
+	}
+}
+
+// A key written under one table must not be clobbered by writing a key of the
+// same name under a different table. The old writer matched on the first occurrence
+// of "name =" regardless of which table it belonged to.
+func TestWriteConfigKey_DuplicateNameAcrossTables(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := "[twitch]\nchannels = [\"alice\"]\n\n[other]\nchannels = [\"keep\"]\n"
+	_ = os.WriteFile(path, []byte(initial), 0600)
+
+	if err := writeConfigKey(path, "twitch.channels", []string{"bob"}); err != nil {
+		t.Fatalf("writeConfigKey: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if !containsValue(content, "bob") {
+		t.Errorf("new value missing from [twitch]: %s", content)
+	}
+	if !containsValue(content, "keep") {
+		t.Errorf("[other].channels should be preserved: %s", content)
+	}
+	if containsValue(content, "alice") {
+		t.Errorf("[twitch].channels not replaced: %s", content)
+	}
+}
+
+// Values containing embedded quotes must survive a round-trip. The old writer
+// used fmt.Sprintf("%q", v) which escapes correctly on the way out but the
+// matcher at the top of the next call would false-match on the escaped form.
+func TestWriteConfigKey_ValueWithQuote(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := writeConfigKey(path, "twitch.channels", []string{`has"quote`}); err != nil {
+		t.Fatalf("writeConfigKey: %v", err)
+	}
+	// Second write should still parse the first, not corrupt on match.
+	if err := writeConfigKey(path, "twitch.channels", []string{"plain"}); err != nil {
+		t.Fatalf("writeConfigKey (second): %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if !containsValue(content, "plain") {
+		t.Errorf("second value missing: %s", content)
+	}
+	if strings.Contains(content, `has"quote`) || strings.Contains(content, `has\"quote`) {
+		t.Errorf("first value should be gone: %s", content)
+	}
+}
+
+// Writing one key must not drop unknown sibling sections. The map round-trip
+// preserves data that twui's schema doesn't know about.
+func TestWriteConfigKey_PreservesUnknownSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := "[twitch]\nchannels = [\"alice\"]\n\n[unknown]\nfuture_field = \"value\"\n"
+	_ = os.WriteFile(path, []byte(initial), 0600)
+
+	if err := writeConfigKey(path, "twitch.channels", []string{"bob"}); err != nil {
+		t.Fatalf("writeConfigKey: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	content := string(raw)
+	if !strings.Contains(content, "[unknown]") {
+		t.Errorf("[unknown] section should be preserved: %s", content)
+	}
+	if !strings.Contains(content, "future_field") {
+		t.Errorf("unknown key should be preserved: %s", content)
 	}
 }
 
@@ -477,6 +584,54 @@ func TestParseRefreshInterval(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- applyFlagFromViper ---
+
+func TestApplyFlagFromViper_ValidValueApplied(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	var d time.Duration
+	flags.DurationVar(&d, "refresh", 10*time.Second, "")
+	viper.Set("general.refresh", "45s")
+
+	applyFlagFromViper(flags.Lookup("refresh"), "general.refresh")
+
+	if d != 45*time.Second {
+		t.Errorf("expected flag to be 45s, got %v", d)
+	}
+}
+
+func TestApplyFlagFromViper_InvalidValueLeavesDefault(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	// Capture slog so we can assert the warning fires.
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	var d time.Duration
+	flags.DurationVar(&d, "refresh", 10*time.Second, "")
+	viper.Set("general.refresh", "not-a-duration")
+
+	applyFlagFromViper(flags.Lookup("refresh"), "general.refresh")
+
+	if d != 10*time.Second {
+		t.Errorf("expected flag to remain at default 10s on invalid input, got %v", d)
+	}
+	if !strings.Contains(buf.String(), "invalid config value") {
+		t.Errorf("expected warning, got log: %q", buf.String())
+	}
+}
+
+func TestApplyFlagFromViper_NoFlagNoop(t *testing.T) {
+	// Must not panic on nil flag.
+	applyFlagFromViper(nil, "general.refresh")
 }
 
 // --- --refresh flag registration ---
