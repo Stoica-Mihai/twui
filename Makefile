@@ -1,7 +1,7 @@
 BINARY := twui
 CMD    := ./cmd/twui
 
-.PHONY: all build run test vet clean
+.PHONY: all build run debug test vet clean
 
 all: build
 
@@ -10,6 +10,9 @@ build:
 
 run: build
 	./$(BINARY)
+
+debug: build
+	./$(BINARY) -v
 
 test:
 	go test ./...

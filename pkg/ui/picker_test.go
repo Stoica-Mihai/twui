@@ -41,7 +41,7 @@ func mockFns(state *mockState) DiscoveryFuncs {
 		Streams: func(ctx context.Context, channel string) ([]string, error) {
 			return []string{"source", "720p60"}, nil
 		},
-		Launch: func(ctx context.Context, channel, quality string, send func(Status, string)) {},
+		Launch: func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string)) {},
 		ToggleFavorite: func(channel string, add bool) {
 			state.lastFavChannel = channel
 			state.lastFavAdd = add

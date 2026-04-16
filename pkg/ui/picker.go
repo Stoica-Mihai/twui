@@ -73,6 +73,7 @@ type (
 	tickMsg time.Time
 	qualityResultMsg struct {
 		channel   string
+		avatarURL string
 		qualities []string
 		err       error
 	}
@@ -143,7 +144,8 @@ type Model struct {
 	overlay        overlayMode
 	overlayList    []string
 	overlayCursor  int
-	overlayChannel string
+	overlayChannel   string
+	overlayAvatarURL string
 	relatedHosts   []DiscoveryEntry
 	relatedLoading bool
 
@@ -309,12 +311,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case qualityResultMsg:
 		m.loading = false
 		if msg.err != nil || len(msg.qualities) == 0 {
-			return m, m.launchStream(msg.channel, "")
+			return m, m.launchStream(msg.channel, "", msg.avatarURL)
 		}
 		m.overlay = overlayQuality
 		m.overlayList = msg.qualities
 		m.overlayCursor = 0
 		m.overlayChannel = msg.channel
+		m.overlayAvatarURL = msg.avatarURL
 		return m, nil
 
 	case relatedResultMsg:
@@ -1082,8 +1085,9 @@ func (m Model) handleQualityKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		quality := m.overlayList[m.overlayCursor]
 		ch := m.overlayChannel
+		avatar := m.overlayAvatarURL
 		m.overlay = overlayNone
-		return m, m.launchStream(ch, quality)
+		return m, m.launchStream(ch, quality, avatar)
 	}
 	return m, nil
 }
@@ -1205,7 +1209,7 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.watchList) {
 			e := m.watchList[m.cursor]
 			if e.IsLive {
-				return m, m.launchStream(e.Login, "")
+				return m, m.launchStream(e.Login, "", e.AvatarURL)
 			}
 		}
 	case viewModeBrowse:
@@ -1228,7 +1232,7 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 					return m, m.loadCategoryStreams(m.categoryStack[len(m.categoryStack)-1], e.Cursor, true)
 				}
 				if e.IsLive {
-					return m, m.launchStream(e.Login, "")
+					return m, m.launchStream(e.Login, "", e.AvatarURL)
 				}
 			}
 		}
@@ -1236,7 +1240,7 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.searchList) {
 			e := m.searchList[m.cursor]
 			if e.IsLive {
-				return m, m.launchStream(e.Login, "")
+				return m, m.launchStream(e.Login, "", e.AvatarURL)
 			}
 		}
 	case viewModeIgnored:
@@ -1318,6 +1322,7 @@ func (m Model) handleQualityPicker() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	ch := e.Login
+	avatar := e.AvatarURL
 	m.loading = true
 	ctx := m.ctx
 	fns := m.fns
@@ -1325,7 +1330,7 @@ func (m Model) handleQualityPicker() (tea.Model, tea.Cmd) {
 		c, cancel := context.WithTimeout(ctx, timeoutQuality)
 		defer cancel()
 		qualities, err := fns.Streams(c, ch)
-		return qualityResultMsg{channel: ch, qualities: qualities, err: err}
+		return qualityResultMsg{channel: ch, avatarURL: avatar, qualities: qualities, err: err}
 	}
 }
 
@@ -1616,7 +1621,7 @@ func (m Model) debounceSearch(query string) tea.Cmd {
 	})
 }
 
-func (m Model) launchStream(channel, quality string) tea.Cmd {
+func (m Model) launchStream(channel, quality, avatarURL string) tea.Cmd {
 	m.lastGen++
 	gen := m.lastGen
 
@@ -1644,7 +1649,7 @@ func (m Model) launchStream(channel, quality string) tea.Cmd {
 
 	fns := m.fns
 	go func() {
-		fns.Launch(ctx, channel, quality, func(status Status, detail string) {
+		fns.Launch(ctx, channel, quality, avatarURL, func(status Status, detail string) {
 			select {
 			case ch <- statusUpdateMsg{channel: channel, status: status, detail: detail, gen: gen}:
 			default:

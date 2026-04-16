@@ -5,18 +5,21 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/mcs/twui/pkg/notify"
 	"github.com/mcs/twui/pkg/output"
 	"github.com/mcs/twui/pkg/session"
 	"github.com/mcs/twui/pkg/stream"
@@ -135,6 +138,9 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	playerArgs, _ := cmd.Root().PersistentFlags().GetStringSlice("player-args")
 	lowLatency, _ := cmd.Root().PersistentFlags().GetBool("low-latency")
 	client.LowLatency = lowLatency
+
+	const notifyTimeoutMs = 5000
+	notifier := notify.NewNotifier(notifyTimeoutMs)
 
 	// Load theme
 	themeName := viper.GetString("theming.theme")
@@ -268,8 +274,20 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			return sortedStreamNames(streams), nil
 		},
 
-		Launch: func(c context.Context, channel, quality string, send func(ui.Status, string)) {
+		Launch: func(c context.Context, channel, quality, avatarURL string, send func(ui.Status, string)) {
 			send(ui.StatusWaiting, "")
+
+			// Download avatar concurrently — don't block stream launch.
+			var iconPath string
+			var iconOnce sync.Once
+			iconCh := make(chan string, 1)
+			go func() {
+				iconCh <- downloadAvatar(c, sess.HTTP, avatarURL, channel)
+			}()
+			getIcon := func() string {
+				iconOnce.Do(func() { iconPath = <-iconCh })
+				return iconPath
+			}
 
 			streams, err := client.Streams(c, channel)
 			if err != nil {
@@ -296,12 +314,38 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				}
 			}
 
+			// Wire up notification hooks before opening.
+			if abn, ok := s.(stream.AdBreakNotifier); ok {
+				abn.SetOnAdBreak(func(duration float64, adType string) {
+					notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
+					send(ui.StatusAdBreak, "")
+				})
+			}
+			if aen, ok := s.(stream.AdEndNotifier); ok {
+				aen.SetOnAdEnd(func() {
+					notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+					send(ui.StatusPlaying, q)
+				})
+			}
+			if prn, ok := s.(stream.PreRollNotifier); ok {
+				prn.SetOnPreRoll(func() {
+					send(ui.StatusWaiting, "preroll")
+				})
+			}
+			if d, ok := s.(stream.Droppable); ok {
+				d.SetOnDrop(func(err error) {
+					notifier.SendWithIcon(channel, "Stream dropped", getIcon())
+					send(ui.StatusReconnecting, "")
+				})
+			}
+
 			reader, err := s.Open()
 			if err != nil {
 				slog.Error("Failed to open stream", "channel", channel, "quality", q, "err", err)
 				return
 			}
 
+			notifier.SendWithIcon(channel, "Stream started", getIcon())
 			send(ui.StatusPlaying, q)
 
 			p := &output.Player{
@@ -318,6 +362,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					slog.Error("Player exited with error", "err", err)
 				}
 			}
+			notifier.SendWithIcon(channel, "Stream ended", getIcon())
 		},
 
 		ToggleFavorite: func(channel string, add bool) {
@@ -502,6 +547,58 @@ func streamWeight(name string) float64 {
 	}
 
 	return 1 - altPenalty
+}
+
+// avatarCache stores downloaded avatar file paths to avoid re-downloading.
+var avatarCache sync.Map
+
+// downloadAvatar downloads a channel avatar to a temp file and returns the path.
+// Returns "" on any error. Caches per channel for the session lifetime.
+func downloadAvatar(ctx context.Context, client *http.Client, url, channel string) string {
+	if url == "" {
+		return ""
+	}
+	if p, ok := avatarCache.Load(channel); ok {
+		return p.(string)
+	}
+
+	dir := filepath.Join(os.TempDir(), "twui-avatars")
+	_ = os.MkdirAll(dir, 0700)
+
+	// Check if file exists on disk from a previous session.
+	filePath := filepath.Join(dir, channel+".jpg")
+	if _, err := os.Stat(filePath); err == nil {
+		avatarCache.Store(channel, filePath)
+		return filePath
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return ""
+	}
+
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return ""
+	}
+	const maxAvatarBytes = 512 << 10 // 512KB — avatars are typically <100KB
+	if _, err := io.Copy(f, io.LimitReader(resp.Body, maxAvatarBytes)); err != nil {
+		f.Close()
+		os.Remove(filePath)
+		return ""
+	}
+	f.Close()
+
+	avatarCache.Store(channel, filePath)
+	return filePath
 }
 
 // parseRefreshInterval parses a Go duration string for the auto-refresh interval.

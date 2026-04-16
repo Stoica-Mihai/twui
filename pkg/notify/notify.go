@@ -41,7 +41,7 @@ type linuxNotifier struct {
 	timeoutMs int // 0 = permanent
 }
 
-func (n *linuxNotifier) Send(title, body string) {
+func (n *linuxNotifier) send(args []string) {
 	n.once.Do(func() {
 		_, err := exec.LookPath("notify-send")
 		n.available = err == nil
@@ -52,8 +52,6 @@ func (n *linuxNotifier) Send(title, body string) {
 	if !n.available {
 		return
 	}
-
-	args := []string{title, body}
 	if n.timeoutMs > 0 {
 		args = append([]string{"-t", fmt.Sprintf("%d", n.timeoutMs)}, args...)
 	}
@@ -62,29 +60,16 @@ func (n *linuxNotifier) Send(title, body string) {
 	}
 }
 
+func (n *linuxNotifier) Send(title, body string) {
+	n.send([]string{title, body})
+}
+
 func (n *linuxNotifier) SendWithIcon(title, body, iconPath string) {
 	if iconPath == "" {
-		n.Send(title, body)
+		n.send([]string{title, body})
 		return
 	}
-	n.once.Do(func() {
-		_, err := exec.LookPath("notify-send")
-		n.available = err == nil
-		if !n.available {
-			slog.Warn("notify-send not found in PATH; install libnotify-bin for desktop notifications")
-		}
-	})
-	if !n.available {
-		return
-	}
-
-	args := []string{"-i", iconPath, title, body}
-	if n.timeoutMs > 0 {
-		args = append([]string{"-t", fmt.Sprintf("%d", n.timeoutMs)}, args...)
-	}
-	if err := exec.Command("notify-send", args...).Run(); err != nil {
-		slog.Debug("notify-send failed", "err", err)
-	}
+	n.send([]string{"-i", iconPath, title, body})
 }
 
 // macNotifier sends notifications via osascript.
