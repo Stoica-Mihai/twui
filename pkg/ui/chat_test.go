@@ -324,6 +324,29 @@ func TestRenderChatHeader_SingleSessionOmitsCycleHint(t *testing.T) {
 	}
 }
 
+func TestRenderChatHeader_AdvertisesCHideInEveryState(t *testing.T) {
+	// Live single-session.
+	m := chatModel(t, "shroud")
+	if plain := stripANSI(m.renderChatHeader()); !strings.Contains(plain, "C hide") {
+		t.Errorf("live single-session header missing C hide: %q", plain)
+	}
+
+	// Live multi-session.
+	m = chatModel(t, "a", "b")
+	if plain := stripANSI(m.renderChatHeader()); !strings.Contains(plain, "C hide") {
+		t.Errorf("live multi-session header missing C hide: %q", plain)
+	}
+
+	// Paused.
+	m = chatModel(t, "shroud")
+	s := m.chatSessions["shroud"]
+	pushN(s, 10)
+	s.ScrollBack(3)
+	if plain := stripANSI(m.renderChatHeader()); !strings.Contains(plain, "C hide") {
+		t.Errorf("paused header missing C hide: %q", plain)
+	}
+}
+
 func TestRenderChatLine_FormatsBadgesAndEmotes(t *testing.T) {
 	m := chatModel(t, "c")
 	msg := chat.Chat{

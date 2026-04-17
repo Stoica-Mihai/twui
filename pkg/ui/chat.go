@@ -347,14 +347,19 @@ func (m Model) renderChatHeader() string {
 			m.styles.live.Render(sess.Channel)
 	}
 
+	// Hint is always "C hide" + context. c-cycle is only meaningful with
+	// 2+ sessions. [ ] scroll hints at the scrollback keys. Space resume
+	// takes precedence when paused because resuming is the one thing the
+	// user actually needs to do right then.
 	var right string
 	switch {
 	case sess.IsPaused():
-		right = m.styles.favorite.Render("Space resume")
+		right = m.styles.favorite.Render("Space resume") +
+			m.styles.text.Render("  ·  C hide")
 	case total > 1:
-		right = m.styles.text.Render(fmt.Sprintf("[%d of %d]  c cycle  [ ] scroll", idx, total))
+		right = m.styles.text.Render(fmt.Sprintf("[%d of %d]  c cycle  [ ] scroll  C hide", idx, total))
 	default:
-		right = m.styles.text.Render("[ ] scroll")
+		right = m.styles.text.Render("[ ] scroll  C hide")
 	}
 
 	return joinLeftRight(left, right, m.width-2)
