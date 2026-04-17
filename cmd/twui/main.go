@@ -41,10 +41,19 @@ var (
 	verbose bool
 )
 
+// Injected at release time by goreleaser via -ldflags. Defaults describe an
+// unreleased dev build; see .goreleaser.yaml.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 var rootCmd = &cobra.Command{
-	Use:   "twui [quality]",
-	Short: "Anonymous Twitch TUI for browsing and watching live streams",
-	Args:  cobra.MaximumNArgs(1),
+	Use:     "twui [quality]",
+	Short:   "Anonymous Twitch TUI for browsing and watching live streams",
+	Version: fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
+	Args:    cobra.MaximumNArgs(1),
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return initConfig(cmd)
 	},

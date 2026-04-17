@@ -1,0 +1,62 @@
+# goreleaser config for twui.
+# Docs: https://goreleaser.com/customization/
+#
+# This file ONLY publishes to GitHub Releases. It does not push to Homebrew
+# taps, AUR, Scoop, Snapcraft, or produce .deb/.rpm/.apk packages. Add those
+# later under `brews:`, `aurs:`, `nfpms:`, etc. if the need arises.
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: twui
+    main: ./cmd/twui
+    binary: twui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  # Used by `goreleaser release --snapshot` (our `make release-dry`).
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+      - "^docs:"
+
+release:
+  github:
+    owner: Stoica-Mihai
+    name: twui
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
