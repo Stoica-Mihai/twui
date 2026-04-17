@@ -1,7 +1,7 @@
 BINARY := twui
 CMD    := ./cmd/twui
 
-.PHONY: all build run debug test test-race test-live coverage coverage-html vet lint fmt install release-dry clean
+.PHONY: all build run debug demo test test-race test-live coverage coverage-html vet lint fmt install release-dry clean
 
 all: build
 
@@ -13,6 +13,11 @@ run: build
 
 debug: build
 	./$(BINARY) -v
+
+# Run the TUI against hardcoded fixtures — no Twitch API, no media player,
+# no real IRC. Useful for screenshots and zero-network smoke testing.
+demo: build
+	./$(BINARY) --demo
 
 test:
 	go test ./...
