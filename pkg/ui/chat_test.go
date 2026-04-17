@@ -324,6 +324,33 @@ func TestRenderChatHeader_SingleSessionOmitsCycleHint(t *testing.T) {
 	}
 }
 
+func TestRenderFooter_AdvertisesCChatWhenPaneHiddenAndSessionsExist(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.width = 160
+	m.height = 40
+
+	// No sessions: footer should NOT show the chat hint.
+	if got := stripANSI(m.renderFooter()); strings.Contains(got, "C chat") {
+		t.Errorf("no sessions should hide C chat hint: %q", got)
+	}
+
+	// Sessions exist but pane is visible: footer should NOT show it (the
+	// pane header already does "C hide").
+	m.chatSessions["a"] = NewChatSession("a", 100)
+	m.chatOrder = []string{"a"}
+	m.chatFocus = "a"
+	m.chatVisible = true
+	if got := stripANSI(m.renderFooter()); strings.Contains(got, "C chat") {
+		t.Errorf("pane visible should hide C chat hint: %q", got)
+	}
+
+	// Sessions exist but pane hidden: footer SHOULD show it.
+	m.chatVisible = false
+	if got := stripANSI(m.renderFooter()); !strings.Contains(got, "C chat") {
+		t.Errorf("pane hidden with sessions should show C chat hint: %q", got)
+	}
+}
+
 func TestRenderChatHeader_AdvertisesCHideInEveryState(t *testing.T) {
 	// Live single-session.
 	m := chatModel(t, "shroud")

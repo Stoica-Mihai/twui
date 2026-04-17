@@ -571,19 +571,21 @@ func (m Model) renderFooter() string {
 	}
 
 	// Right side.
-	var right string
-	switch {
-	default:
-		parts := []string{
-			hint("Enter", "play"),
-			hint("i", "quality"),
-			hint("f", "fav"),
-			hint("x", "ignore"),
-			hint("r", "related"),
-			hint("t", "theme"),
-		}
-		right = strings.Join(parts, dot) + "  "
+	parts := []string{
+		hint("Enter", "play"),
+		hint("i", "quality"),
+		hint("f", "fav"),
+		hint("x", "ignore"),
+		hint("r", "related"),
+		hint("t", "theme"),
 	}
+	// Only hint the chat toggle when it's actionable: there are live sessions
+	// but the pane is hidden. Inside the pane the "C hide" hint is already
+	// shown by renderChatHeader.
+	if len(m.chatSessions) > 0 && !m.chatVisible {
+		parts = append(parts, hint("C", "chat"))
+	}
+	right := strings.Join(parts, dot) + "  "
 
 	// Pad between left and right.
 	leftW := uniseg.StringWidth(stripANSI(left))
