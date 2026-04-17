@@ -79,7 +79,7 @@ type (
 	}
 	relatedResultMsg struct {
 		channel string
-		hosts   []DiscoveryEntry
+		streams []DiscoveryEntry
 		err     error
 	}
 	searchDebounceMsg struct {
@@ -148,8 +148,9 @@ type Model struct {
 	overlayList      []string
 	overlayCursor    int
 	overlayChannel   string
+	overlayCategory  string
 	overlayAvatarURL string
-	relatedHosts     []DiscoveryEntry
+	relatedStreams   []DiscoveryEntry
 	relatedLoading   bool
 
 	// playback
@@ -355,7 +356,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case relatedResultMsg:
 		m.relatedLoading = false
 		if msg.err == nil {
-			m.relatedHosts = msg.hosts
+			m.relatedStreams = msg.streams
 		}
 		return m, nil
 

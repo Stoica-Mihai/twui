@@ -63,7 +63,7 @@ func mockFns(state *mockState) DiscoveryFuncs {
 			state.lastIgnoreAdd = add
 		},
 		IgnoreList: func() []string { return state.ignored },
-		HostingChannels: func(ctx context.Context, channel string) ([]DiscoveryEntry, error) {
+		RelatedChannels: func(ctx context.Context, channel, category string) ([]DiscoveryEntry, error) {
 			return nil, nil
 		},
 		WriteTheme: func(name string) { state.lastTheme = name },
@@ -690,7 +690,7 @@ func TestModel_RelatedOverlay_Opens(t *testing.T) {
 	m := newTestModel(state)
 	m.mode = viewModeWatchList
 	m.watchList = []DiscoveryEntry{
-		{Kind: EntryChannel, Login: "streamer1", IsLive: true},
+		{Kind: EntryChannel, Login: "streamer1", IsLive: true, Category: "Valorant"},
 	}
 	m.cursor = 0
 
@@ -701,6 +701,9 @@ func TestModel_RelatedOverlay_Opens(t *testing.T) {
 	}
 	if m.overlayChannel != "streamer1" {
 		t.Errorf("overlayChannel = %q, want %q", m.overlayChannel, "streamer1")
+	}
+	if m.overlayCategory != "Valorant" {
+		t.Errorf("overlayCategory = %q, want Valorant", m.overlayCategory)
 	}
 }
 
@@ -1614,7 +1617,7 @@ func TestModel_HandleRelated_OpensOverlay(t *testing.T) {
 	m := newTestModel(state)
 	m.mode = viewModeWatchList
 	m.watchList = []DiscoveryEntry{
-		{Kind: EntryChannel, Login: "host_target", IsLive: true},
+		{Kind: EntryChannel, Login: "host_target", IsLive: true, Category: "Valorant"},
 	}
 	m.cursor = 0
 
@@ -1627,11 +1630,38 @@ func TestModel_HandleRelated_OpensOverlay(t *testing.T) {
 	if m2.overlayChannel != "host_target" {
 		t.Errorf("overlayChannel = %q, want %q", m2.overlayChannel, "host_target")
 	}
+	if m2.overlayCategory != "Valorant" {
+		t.Errorf("overlayCategory = %q, want Valorant", m2.overlayCategory)
+	}
 	if !m2.relatedLoading {
 		t.Error("relatedLoading should be true")
 	}
 	if cmd == nil {
 		t.Error("handleRelated should return a non-nil cmd")
+	}
+}
+
+func TestModel_HandleRelated_NoopWhenOfflineOrNoCategory(t *testing.T) {
+	// Offline or category-less entries can't produce a meaningful related
+	// lookup; handleRelated should silently no-op.
+	state := &mockState{}
+	m := newTestModel(state)
+	m.mode = viewModeWatchList
+	m.watchList = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "x", IsLive: false, Category: "Valorant"},
+		{Kind: EntryChannel, Login: "y", IsLive: true, Category: ""},
+	}
+
+	for _, cursor := range []int{0, 1} {
+		m.cursor = cursor
+		newM, cmd := m.Update(pressKey("r"))
+		m2 := newM.(Model)
+		if m2.overlay == overlayRelated {
+			t.Errorf("cursor %d: overlay should NOT open (entry is offline or category-less)", cursor)
+		}
+		if cmd != nil {
+			t.Errorf("cursor %d: expected nil cmd, got non-nil", cursor)
+		}
 	}
 }
 
@@ -2181,25 +2211,26 @@ func TestModel_EndKey(t *testing.T) {
 
 // --- relatedResultMsg ---
 
-func TestModel_RelatedResult_StoresHosts(t *testing.T) {
+func TestModel_RelatedResult_StoresStreams(t *testing.T) {
 	state := &mockState{}
 	m := newTestModel(state)
 	m.overlay = overlayRelated
 	m.overlayChannel = "target"
+	m.overlayCategory = "Valorant"
 	m.relatedLoading = true
 
-	hosts := []DiscoveryEntry{
-		{Kind: EntryChannel, Login: "host1"},
-		{Kind: EntryChannel, Login: "host2"},
+	streams := []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "peer1", IsLive: true, ViewerCount: 1200},
+		{Kind: EntryChannel, Login: "peer2", IsLive: true, ViewerCount: 600},
 	}
-	newM, _ := m.Update(relatedResultMsg{channel: "target", hosts: hosts})
+	newM, _ := m.Update(relatedResultMsg{channel: "target", streams: streams})
 	m2 := newM.(Model)
 
 	if m2.relatedLoading {
 		t.Error("relatedLoading should be false after result")
 	}
-	if len(m2.relatedHosts) != 2 {
-		t.Errorf("relatedHosts len = %d, want 2", len(m2.relatedHosts))
+	if len(m2.relatedStreams) != 2 {
+		t.Errorf("relatedStreams len = %d, want 2", len(m2.relatedStreams))
 	}
 }
 

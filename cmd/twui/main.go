@@ -41,6 +41,10 @@ var (
 	verbose bool
 )
 
+// maxRelatedStreams caps how many other-same-category entries the `r`
+// overlay fetches and displays.
+const maxRelatedStreams = 10
+
 // Injected at release time by goreleaser via -ldflags. Defaults describe an
 // unreleased dev build; see .goreleaser.yaml.
 var (
@@ -453,18 +457,34 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			return ignored
 		},
 
-		HostingChannels: func(c context.Context, channel string) ([]ui.DiscoveryEntry, error) {
-			hosts, err := api.HostingChannels(c, channel)
+		RelatedChannels: func(c context.Context, channel, category string) ([]ui.DiscoveryEntry, error) {
+			// Twitch removed the Host feature in Oct 2022, so "related" now
+			// means other live channels in the same category. Fetch the
+			// category's top streams, drop the subject channel, cap at 10.
+			streams, _, err := api.CategoryStreams(c, category, maxRelatedStreams, "")
 			if err != nil {
 				return nil, err
 			}
-			entries := make([]ui.DiscoveryEntry, 0, len(hosts))
-			for _, h := range hosts {
+			entries := make([]ui.DiscoveryEntry, 0, len(streams))
+			for _, s := range streams {
+				if strings.EqualFold(s.Login, channel) {
+					continue
+				}
 				entries = append(entries, ui.DiscoveryEntry{
 					Kind:        ui.EntryChannel,
-					Login:       h.Login,
-					DisplayName: h.DisplayName,
+					Login:       s.Login,
+					DisplayName: s.DisplayName,
+					Title:       s.Title,
+					Category:    s.Category,
+					ViewerCount: s.ViewerCount,
+					StartedAt:   s.StartedAt,
+					AvatarURL:   s.AvatarURL,
+					IsFavorite:  favSet[s.Login],
+					IsLive:      true,
 				})
+				if len(entries) >= maxRelatedStreams {
+					break
+				}
 			}
 			return entries, nil
 		},

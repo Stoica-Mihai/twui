@@ -27,12 +27,6 @@ type ChannelResult struct {
 	AvatarURL   string
 }
 
-// HostResult represents a channel that is hosting or related to another.
-type HostResult struct {
-	Login       string
-	DisplayName string
-}
-
 const (
 	defaultSearchLimit = 20
 	defaultBrowseLimit = 30
@@ -261,39 +255,6 @@ func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, li
 	return results, nextCursor, nil
 }
 
-// HostingChannels returns channels that are hosting the given channel.
-func (a *TwitchAPI) HostingChannels(ctx context.Context, channel string) ([]HostResult, error) {
-	variables := map[string]any{
-		"channelLogin": channel,
-	}
-
-	body, err := a.doGQL(ctx, "ChannelPage_HostInfo", "", variables, nil)
-	if err != nil {
-		return nil, fmt.Errorf("twitch: hosting channels: %w", err)
-	}
-
-	var data struct {
-		User *struct {
-			Hosting *struct {
-				Login       string `json:"login"`
-				DisplayName string `json:"displayName"`
-			} `json:"hosting"`
-		} `json:"user"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("twitch: parse hosting channels: %w", err)
-	}
-
-	if data.User == nil || data.User.Hosting == nil {
-		return nil, nil
-	}
-
-	return []HostResult{{
-		Login:       data.User.Hosting.Login,
-		DisplayName: data.User.Hosting.DisplayName,
-	}}, nil
-}
-
 // fallback query text for discovery operations (hashes start empty → always fallback)
 func init() {
 	fallbackQueries["SearchResultsPage"] = `query SearchResultsPage($query: String!, $first: Int, $cursor: String, $platform: String!) {
@@ -373,16 +334,4 @@ func init() {
   }
 }`
 
-	fallbackQueries["ChannelPage_HostInfo"] = `query ChannelPage_HostInfo($channelLogin: String!) {
-  user(login: $channelLogin) {
-    id
-    hosting {
-      id
-      login
-      displayName
-      __typename
-    }
-    __typename
-  }
-}`
 }
