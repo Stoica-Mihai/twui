@@ -325,7 +325,7 @@ func TestLaunchStream_PanicInLaunchStillClosesChannel(t *testing.T) {
 		panic("boom")
 	}
 
-	_ = m.launchStream("chan", "", "")
+	m, _ = m.launchStream("chan", "", "")
 
 	sess, ok := m.sessions["chan"]
 	if !ok {

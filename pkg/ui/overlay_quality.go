@@ -41,7 +41,8 @@ func (m Model) handleQualityKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		ch := m.overlayChannel
 		avatar := m.overlayAvatarURL
 		m.overlay = overlayNone
-		return m, m.launchStream(ch, quality, avatar)
+		newM, cmd := m.launchStream(ch, quality, avatar)
+		return newM, cmd
 	}
 	return m, nil
 }

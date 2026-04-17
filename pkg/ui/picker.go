@@ -158,6 +158,7 @@ type Model struct {
 
 	// chat pane
 	chatSessions map[string]*ChatSession // keyed by channel login
+	chatConns    map[string]*chatConn    // live IRC clients keyed by channel login
 	chatOrder    []string                // launch order for C-cycle
 	chatFocus    string                  // channel of the session currently in the pane
 	chatVisible  bool                    // toggled by `c`; set true on first session
@@ -183,6 +184,7 @@ func NewModel(fns DiscoveryFuncs, theme Theme, refreshInterval time.Duration) *M
 		symbols:          UnicodeSymbols(),
 		sessions:         make(map[string]*playbackSession),
 		chatSessions:     make(map[string]*ChatSession),
+		chatConns:        make(map[string]*chatConn),
 		ctx:              ctx,
 		cancel:           cancel,
 		refreshInterval:  refreshInterval,
@@ -328,7 +330,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case qualityResultMsg:
 		m.loading = false
 		if msg.err != nil || len(msg.qualities) == 0 {
-			return m, m.launchStream(msg.channel, "", msg.avatarURL)
+			newM, cmd := m.launchStream(msg.channel, "", msg.avatarURL)
+			return newM, cmd
 		}
 		m.overlay = overlayQuality
 		m.overlayList = msg.qualities
@@ -370,6 +373,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.done {
 				s.cancel()
 				delete(m.sessions, msg.channel)
+				// Also tear down the chat connection; the chatClosedMsg
+				// that follows will finish the bookkeeping cleanup.
+				m = m.stopChat(msg.channel)
 				return m, nil
 			}
 			if msg.notice != "" {
@@ -380,6 +386,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, waitPlayback(s.ctx, s.ch, msg.channel, msg.gen)
 		}
+		return m, nil
+
+	case chatReceivedMsg:
+		if s, ok := m.chatSessions[msg.channel]; ok {
+			s.Push(msg.msg)
+		}
+		if conn, ok := m.chatConns[msg.channel]; ok {
+			return m, waitChatMsg(conn.client.Messages(), msg.channel, conn.ctx)
+		}
+		return m, nil
+
+	case chatClosedMsg:
+		m = m.handleChatClosed(msg.channel)
 		return m, nil
 
 	case titleScrollMsg:
@@ -669,7 +688,8 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.watchList) {
 			e := m.watchList[m.cursor]
 			if e.IsLive {
-				return m, m.launchStream(e.Login, "", e.AvatarURL)
+				newM, cmd := m.launchStream(e.Login, "", e.AvatarURL)
+				return newM, cmd
 			}
 		}
 	case viewModeBrowse:
@@ -692,7 +712,8 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 					return m, m.loadCategoryStreams(m.categoryStack[len(m.categoryStack)-1], e.Cursor, true)
 				}
 				if e.IsLive {
-					return m, m.launchStream(e.Login, "", e.AvatarURL)
+					newM, cmd := m.launchStream(e.Login, "", e.AvatarURL)
+					return newM, cmd
 				}
 			}
 		}
@@ -700,7 +721,8 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.searchList) {
 			e := m.searchList[m.cursor]
 			if e.IsLive {
-				return m, m.launchStream(e.Login, "", e.AvatarURL)
+				newM, cmd := m.launchStream(e.Login, "", e.AvatarURL)
+				return newM, cmd
 			}
 		}
 	case viewModeIgnored:
@@ -1046,7 +1068,7 @@ func findCategoryByName(entries []DiscoveryEntry, name string) int {
 	return 0
 }
 
-func (m Model) launchStream(channel, quality, avatarURL string) tea.Cmd {
+func (m Model) launchStream(channel, quality, avatarURL string) (Model, tea.Cmd) {
 	m.lastGen++
 	gen := m.lastGen
 
@@ -1105,7 +1127,16 @@ func (m Model) launchStream(channel, quality, avatarURL string) tea.Cmd {
 		fns.Launch(ctx, channel, quality, avatarURL, send, notice)
 	}()
 
-	return waitPlayback(ctx, ch, channel, gen)
+	cmds := []tea.Cmd{waitPlayback(ctx, ch, channel, gen)}
+
+	// Start (or reuse) the chat session + IRC client for this channel.
+	newM, chatCmd, started := m.startChat(channel)
+	m = newM
+	if started {
+		cmds = append(cmds, chatCmd)
+	}
+
+	return m, tea.Batch(cmds...)
 }
 
 // waitPlayback returns a Cmd that reads one event from the playback channel.

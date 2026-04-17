@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"sort"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/rivo/uniseg"
 
@@ -122,6 +125,120 @@ func (s *ChatSession) NewSincePause() int { return s.newSincePause }
 
 // Len returns the current size of the message buffer (for tests / metrics).
 func (s *ChatSession) Len() int { return len(s.buffer) }
+
+// --- Bubble Tea messages for chat events ---
+
+// chatReceivedMsg arrives each time the IRC client forwards one parsed chat
+// line. Update pushes it into the matching ChatSession and re-arms the
+// waitChatMsg Cmd to read the next one.
+type chatReceivedMsg struct {
+	channel string
+	msg     chat.Chat
+}
+
+// chatClosedMsg arrives when an IRC client's Messages() channel closes —
+// either because the playback session ended (ctx cancelled) or the client
+// hit a fatal error. Update cleans up the session + connection bookkeeping
+// and, if the dropped channel was focused, picks a new focus.
+type chatClosedMsg struct {
+	channel string
+}
+
+// chatConn tracks the IRC client plus its cancel/ctx for one channel.
+type chatConn struct {
+	client *chat.Client
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// waitChatMsg returns a Cmd that reads a single message from an IRC client's
+// Messages() channel and surfaces it as a chatReceivedMsg (or chatClosedMsg
+// if the channel closed / the ctx was cancelled).
+func waitChatMsg(msgs <-chan *chat.Chat, channel string, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case m, ok := <-msgs:
+			if !ok {
+				return chatClosedMsg{channel: channel}
+			}
+			return chatReceivedMsg{channel: channel, msg: *m}
+		case <-ctx.Done():
+			return chatClosedMsg{channel: channel}
+		}
+	}
+}
+
+// startChat ensures a ChatSession + IRC client are running for the given
+// channel. If one is already running, returns (m, nil, false). Otherwise
+// creates the session, starts the client goroutine, and returns a Cmd that
+// reads the first message. The Model returned reflects any state mutations
+// (chatOrder append, focus assignment, chatVisible flip).
+func (m Model) startChat(channel string) (Model, tea.Cmd, bool) {
+	if _, running := m.chatConns[channel]; running {
+		return m, nil, false
+	}
+
+	client := chat.NewClient(channel)
+	ctx, cancel := context.WithCancel(m.ctx)
+	go func() {
+		if err := client.Run(ctx); err != nil && ctx.Err() == nil {
+			slog.Debug("chat client exited", "channel", channel, "err", err)
+		}
+	}()
+
+	if m.chatConns == nil {
+		m.chatConns = make(map[string]*chatConn)
+	}
+	m.chatConns[channel] = &chatConn{client: client, ctx: ctx, cancel: cancel}
+
+	if _, exists := m.chatSessions[channel]; !exists {
+		m.chatSessions[channel] = NewChatSession(channel, defaultChatBacklog)
+		m.chatOrder = append(m.chatOrder, channel)
+	}
+	if m.chatFocus == "" {
+		m.chatFocus = channel
+	}
+	if !m.chatVisible {
+		m.chatVisible = true
+	}
+
+	return m, waitChatMsg(client.Messages(), channel, ctx), true
+}
+
+// stopChat cancels the IRC client for a channel and removes its session
+// from the model. Called when a playback session ends; the matching
+// chatClosedMsg finishes the cleanup when Messages() drains.
+func (m Model) stopChat(channel string) Model {
+	if conn, ok := m.chatConns[channel]; ok {
+		conn.cancel()
+	}
+	return m
+}
+
+// handleChatClosed drops a channel from every chat bookkeeping slot and
+// picks a new focus if needed. Returns the updated Model.
+func (m Model) handleChatClosed(channel string) Model {
+	if conn, ok := m.chatConns[channel]; ok {
+		conn.cancel()
+		delete(m.chatConns, channel)
+	}
+	delete(m.chatSessions, channel)
+	for i, ch := range m.chatOrder {
+		if ch == channel {
+			m.chatOrder = append(m.chatOrder[:i], m.chatOrder[i+1:]...)
+			break
+		}
+	}
+	if m.chatFocus == channel {
+		if len(m.chatOrder) > 0 {
+			m.chatFocus = m.chatOrder[0]
+		} else {
+			m.chatFocus = ""
+			m.chatVisible = false
+		}
+	}
+	return m
+}
 
 // --- Model helpers for chat keymap dispatch ---
 

@@ -629,6 +629,130 @@ func TestChatKey_EscFallsThroughWhenPaneHidden(t *testing.T) {
 	}
 }
 
+// --- Lifecycle ---
+
+func TestChatLifecycle_ReceivedMsgPushes(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatSessions["c"] = NewChatSession("c", 100)
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+
+	msg := chatReceivedMsg{
+		channel: "c",
+		msg:     chat.Chat{Login: "alice", Text: "hi"},
+	}
+	newM, _ := m.Update(msg)
+	m2 := newM.(Model)
+	s := m2.chatSessions["c"]
+	if s.Len() != 1 || s.buffer[0].Text != "hi" {
+		t.Errorf("message not pushed: len=%d", s.Len())
+	}
+}
+
+func TestChatLifecycle_ReceivedMsgUnknownChannelIgnored(t *testing.T) {
+	m := newTestModel(&mockState{})
+	// No sessions, no conns — incoming msg for "ghost" should be dropped
+	// without panic and without changing state.
+	msg := chatReceivedMsg{channel: "ghost", msg: chat.Chat{Text: "hi"}}
+	newM, cmd := m.Update(msg)
+	if cmd != nil {
+		t.Error("unknown-channel receive should not re-arm a Cmd")
+	}
+	if len(newM.(Model).chatSessions) != 0 {
+		t.Error("state changed unexpectedly")
+	}
+}
+
+func TestChatLifecycle_ClosedMsgDropsAndRefocuses(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatSessions["a"] = NewChatSession("a", 100)
+	m.chatSessions["b"] = NewChatSession("b", 100)
+	m.chatOrder = []string{"a", "b"}
+	m.chatFocus = "a"
+	m.chatVisible = true
+
+	newM, _ := m.Update(chatClosedMsg{channel: "a"})
+	m2 := newM.(Model)
+
+	if _, ok := m2.chatSessions["a"]; ok {
+		t.Error("closed session should be removed")
+	}
+	if len(m2.chatOrder) != 1 || m2.chatOrder[0] != "b" {
+		t.Errorf("chatOrder after close = %v, want [b]", m2.chatOrder)
+	}
+	if m2.chatFocus != "b" {
+		t.Errorf("chatFocus after close = %q, want b", m2.chatFocus)
+	}
+	if !m2.chatVisible {
+		t.Error("chatVisible should stay true while other sessions remain")
+	}
+}
+
+func TestChatLifecycle_ClosedLastSessionHidesPane(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatSessions["a"] = NewChatSession("a", 100)
+	m.chatOrder = []string{"a"}
+	m.chatFocus = "a"
+	m.chatVisible = true
+
+	newM, _ := m.Update(chatClosedMsg{channel: "a"})
+	m2 := newM.(Model)
+
+	if m2.chatFocus != "" {
+		t.Errorf("chatFocus = %q, want empty after last session closes", m2.chatFocus)
+	}
+	if m2.chatVisible {
+		t.Error("chatVisible should flip off when all sessions are gone")
+	}
+}
+
+func TestChatLifecycle_StartChatAutoshows(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatVisible = false
+
+	newM, _, ok := m.startChat("shroud")
+	if !ok {
+		t.Fatal("startChat should return ok=true for a fresh channel")
+	}
+	// Cleanup the goroutine we just spawned.
+	t.Cleanup(func() {
+		if conn, ok := newM.chatConns["shroud"]; ok {
+			conn.cancel()
+		}
+	})
+
+	if !newM.chatVisible {
+		t.Error("startChat should flip chatVisible on (first session)")
+	}
+	if newM.chatFocus != "shroud" {
+		t.Errorf("chatFocus = %q, want shroud", newM.chatFocus)
+	}
+	if _, ok := newM.chatSessions["shroud"]; !ok {
+		t.Error("chatSessions missing shroud entry")
+	}
+}
+
+func TestChatLifecycle_StartChatIsIdempotent(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m, _, ok := m.startChat("shroud")
+	if !ok {
+		t.Fatal("first startChat should ok")
+	}
+	t.Cleanup(func() {
+		if conn, ok := m.chatConns["shroud"]; ok {
+			conn.cancel()
+		}
+	})
+
+	_, cmd, ok2 := m.startChat("shroud")
+	if ok2 {
+		t.Error("second startChat for same channel should return ok=false")
+	}
+	if cmd != nil {
+		t.Error("second startChat should return nil Cmd")
+	}
+}
+
 func TestRender_BodyShrinksWhenChatPaneShows(t *testing.T) {
 	// With chat off, the body gets one line count; with chat on, it shrinks
 	// by chatPaneHeight + the border separator.
