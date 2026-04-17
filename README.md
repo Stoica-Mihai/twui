@@ -15,6 +15,7 @@ No Twitch account, no OAuth, no tracking. Built-in ad blocking. Runs mpv or vlc 
 - **Desktop notifications** on stream start / ad break / drop with channel avatars
 - **Auto-refresh** at a configurable interval
 - **ASCII fallback** for terminals without Unicode (`--ascii`, `TERM=linux`)
+- **Live chat pane** per playing stream (anonymous, read-only). Pause on scroll-back, cycle with `C`, hide with `c`
 
 ## Install
 
@@ -63,6 +64,18 @@ twui --refresh 1m    # auto-refresh the current view every 60s
 | `?` | Help overlay |
 | `q` / `Ctrl+C` | Quit |
 
+**Chat pane** (appears when a stream is playing):
+
+| Key | Action |
+|---|---|
+| `c` | Toggle chat pane visibility |
+| `C` | Cycle focus between live sessions |
+| `[` / `]` | Scroll chat back / forward one line (back auto-pauses) |
+| `{` / `}` | Scroll chat back / forward one page |
+| Mouse wheel over pane | Scroll (auto-pauses) |
+| `Space` | Resume autoscroll, jump to newest |
+| `Esc` | Hide pane |
+
 ## Config
 
 Lives at `~/.config/twui/config.toml` and is written in place on favorite / ignore / theme changes.
@@ -86,6 +99,10 @@ theme = "catppuccin"         # or: default, dracula, nord, solarized-dark,
 # border = "#..."
 # text   = "#..."
 # live   = "#..."
+
+[chat]
+enabled     = true           # set false to never open IRC connections
+max-backlog = 500            # per-session message cap
 ```
 
 Environment variables:
