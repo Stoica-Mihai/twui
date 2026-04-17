@@ -63,7 +63,6 @@ func (m Model) renderRelatedOverlay() string {
 		}
 
 		selIdx := m.overlayCursor
-		pad := lipgloss.NewStyle().Padding(0, 1)
 		t := table.New().
 			Border(lipgloss.NormalBorder()).
 			BorderStyle(m.styles.border).
@@ -77,15 +76,23 @@ func (m Model) renderRelatedOverlay() string {
 			Width(w).
 			Headers("Channel", "Viewers").
 			StyleFunc(func(row, col int) lipgloss.Style {
+				// Column alignment is unconditional so header and body
+				// line up and the selected-row highlight still spans the
+				// full right-aligned viewer cell.
+				base := lipgloss.NewStyle().Padding(0, 1)
+				if col == 1 {
+					base = base.Align(lipgloss.Right)
+				}
+				// Per-state fg/bg layered on top of the column alignment.
 				switch {
 				case row == table.HeaderRow:
-					return pad.Inherit(m.styles.title)
+					return base.Inherit(m.styles.title)
 				case row == selIdx:
-					return pad.Inherit(m.styles.selected)
+					return base.Inherit(m.styles.selected)
 				case col == 1:
-					return pad.Inherit(m.styles.offline).Align(lipgloss.Right)
+					return base.Inherit(m.styles.offline)
 				default:
-					return pad.Inherit(m.styles.live)
+					return base.Inherit(m.styles.live)
 				}
 			}).
 			Rows(rows...)
