@@ -10,7 +10,7 @@ import (
 
 // renderRelatedOverlay shows other live streams in the same category as the
 // channel under the cursor — a pragmatic replacement for Twitch's removed
-// Host feature. Title and empty-state reflect that.
+// Host feature. One row is highlighted (m.overlayCursor); Enter launches it.
 func (m Model) renderRelatedOverlay() string {
 	var title string
 	if m.overlayCategory != "" {
@@ -33,13 +33,23 @@ func (m Model) renderRelatedOverlay() string {
 		}
 		lines = append(lines, m.overlayRow(m.styles.text.Render(pad(msg, w))))
 	default:
-		for _, s := range m.relatedStreams {
+		for i, s := range m.relatedStreams {
 			name := s.DisplayName
 			if name == "" {
 				name = s.Login
 			}
-			row := fmt.Sprintf("  %-26s %7s", cellTruncate(name, 26), formatViewers(s.ViewerCount))
-			lines = append(lines, m.overlayRow(m.styles.live.Render(pad(row, w))))
+			fav := " "
+			if s.IsFavorite {
+				fav = m.symbols.Favorite
+			}
+			row := pad(fmt.Sprintf(" %s %-24s %7s", fav, cellTruncate(name, 24), formatViewers(s.ViewerCount)), w)
+			var styled string
+			if i == m.overlayCursor {
+				styled = m.styles.selected.Render(row)
+			} else {
+				styled = m.styles.live.Render(row)
+			}
+			lines = append(lines, m.overlayRow(styled))
 		}
 	}
 	lines = append(lines, m.overlayFooter(w))
@@ -59,6 +69,7 @@ func (m Model) handleRelated() (tea.Model, tea.Cmd) {
 	m.overlay = overlayRelated
 	m.overlayChannel = ch
 	m.overlayCategory = cat
+	m.overlayCursor = 0
 	m.relatedStreams = nil
 	m.relatedLoading = true
 	ctx := m.ctx
@@ -72,10 +83,49 @@ func (m Model) handleRelated() (tea.Model, tea.Cmd) {
 }
 
 // handleRelatedKey handles key presses while the related overlay is open.
+// Navigation mirrors the quality picker: j/k (or arrows) move the cursor,
+// Enter launches the selected related stream, f/x favorite or ignore it
+// (discovery-friendly — users often find new faves or irritants here),
+// Esc/r/q closes.
 func (m Model) handleRelatedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "r", "q", "Q":
 		m.overlay = overlayNone
+	case "j", "down":
+		if m.overlayCursor < len(m.relatedStreams)-1 {
+			m.overlayCursor++
+		}
+	case "k", "up":
+		if m.overlayCursor > 0 {
+			m.overlayCursor--
+		}
+	case "enter":
+		if m.overlayCursor < 0 || m.overlayCursor >= len(m.relatedStreams) {
+			return m, nil
+		}
+		sel := m.relatedStreams[m.overlayCursor]
+		m.overlay = overlayNone
+		newM, cmd := m.launchStream(sel.Login, "", sel.AvatarURL)
+		return newM, cmd
+	case "f":
+		if m.overlayCursor < 0 || m.overlayCursor >= len(m.relatedStreams) {
+			return m, nil
+		}
+		e := &m.relatedStreams[m.overlayCursor]
+		e.IsFavorite = !e.IsFavorite
+		m.fns.ToggleFavorite(e.Login, e.IsFavorite)
+	case "x":
+		if m.overlayCursor < 0 || m.overlayCursor >= len(m.relatedStreams) {
+			return m, nil
+		}
+		e := m.relatedStreams[m.overlayCursor]
+		m.fns.ToggleIgnore(e.Login, true)
+		// Drop the now-ignored row from the overlay so it matches the rest
+		// of twui (ignored channels never appear in live views).
+		m.relatedStreams = append(m.relatedStreams[:m.overlayCursor], m.relatedStreams[m.overlayCursor+1:]...)
+		if m.overlayCursor >= len(m.relatedStreams) && m.overlayCursor > 0 {
+			m.overlayCursor--
+		}
 	}
 	return m, nil
 }

@@ -64,6 +64,16 @@ twui --refresh 1m    # auto-refresh the current view every 60s
 | `?` | Help overlay |
 | `q` / `Ctrl+C` | Quit |
 
+**Related overlay** (opened with `r`):
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Navigate |
+| `Enter` | Launch the selected stream |
+| `f` | Toggle favorite on the selected channel |
+| `x` | Ignore the selected channel (drops from the overlay) |
+| `Esc` / `r` | Close |
+
 **Chat pane** (appears when a stream is playing):
 
 | Key | Action |

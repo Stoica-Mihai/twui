@@ -720,6 +720,157 @@ func TestModel_RelatedOverlay_EscCloses(t *testing.T) {
 	}
 }
 
+func TestModel_RelatedOverlay_NavigatesWithJK(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.overlay = overlayRelated
+	m.overlayChannel = "target"
+	m.overlayCategory = "Valorant"
+	m.relatedStreams = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "a", IsLive: true},
+		{Kind: EntryChannel, Login: "b", IsLive: true},
+		{Kind: EntryChannel, Login: "c", IsLive: true},
+	}
+	m.overlayCursor = 0
+
+	m = updateKey(m, "j")
+	if m.overlayCursor != 1 {
+		t.Errorf("j: overlayCursor = %d, want 1", m.overlayCursor)
+	}
+	m = updateKey(m, "j")
+	if m.overlayCursor != 2 {
+		t.Errorf("j: overlayCursor = %d, want 2", m.overlayCursor)
+	}
+	m = updateKey(m, "j") // clamped at the bottom
+	if m.overlayCursor != 2 {
+		t.Errorf("j (clamped): overlayCursor = %d, want 2", m.overlayCursor)
+	}
+	m = updateKey(m, "k")
+	if m.overlayCursor != 1 {
+		t.Errorf("k: overlayCursor = %d, want 1", m.overlayCursor)
+	}
+}
+
+func TestModel_RelatedOverlay_EnterLaunchesSelected(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.overlay = overlayRelated
+	m.overlayChannel = "target"
+	m.overlayCategory = "Valorant"
+	m.relatedStreams = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "peer_a", IsLive: true, AvatarURL: "https://a.jpg"},
+		{Kind: EntryChannel, Login: "peer_b", IsLive: true, AvatarURL: "https://b.jpg"},
+	}
+	m.overlayCursor = 1
+
+	newM, cmd := m.Update(pressKey("enter"))
+	m2 := newM.(Model)
+
+	if m2.overlay != overlayNone {
+		t.Errorf("Enter should close the overlay, got %v", m2.overlay)
+	}
+	if cmd == nil {
+		t.Error("Enter should return a launch Cmd")
+	}
+	// Confirm a playback session was created for peer_b (the cursor row).
+	if _, ok := m2.sessions["peer_b"]; !ok {
+		t.Errorf("expected playback session for peer_b, got sessions=%v", m2.sessions)
+	}
+}
+
+func TestModel_RelatedOverlay_EnterWithNoStreamsNoOp(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.overlay = overlayRelated
+	m.overlayChannel = "target"
+	m.relatedStreams = nil
+	m.overlayCursor = 0
+
+	newM, cmd := m.Update(pressKey("enter"))
+	m2 := newM.(Model)
+
+	if m2.overlay != overlayRelated {
+		t.Error("Enter on empty list should not close the overlay")
+	}
+	if cmd != nil {
+		t.Error("Enter on empty list should not return a Cmd")
+	}
+}
+
+func TestModel_RelatedOverlay_FTogglesFavorite(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.overlay = overlayRelated
+	m.overlayChannel = "target"
+	m.relatedStreams = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "peer", IsLive: true, IsFavorite: false},
+	}
+	m.overlayCursor = 0
+
+	m = updateKey(m, "f")
+	if !m.relatedStreams[0].IsFavorite {
+		t.Error("f should flip IsFavorite to true")
+	}
+	if state.lastFavChannel != "peer" || !state.lastFavAdd {
+		t.Errorf("f should call ToggleFavorite(peer, true), got (%q, %v)", state.lastFavChannel, state.lastFavAdd)
+	}
+
+	// Pressing f again un-favorites.
+	m = updateKey(m, "f")
+	if m.relatedStreams[0].IsFavorite {
+		t.Error("second f should flip IsFavorite back to false")
+	}
+	if state.lastFavAdd {
+		t.Errorf("second f should call ToggleFavorite(peer, false), lastFavAdd = %v", state.lastFavAdd)
+	}
+}
+
+func TestModel_RelatedOverlay_XIgnoresAndRemovesRow(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.overlay = overlayRelated
+	m.overlayChannel = "target"
+	m.relatedStreams = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "peer_a", IsLive: true},
+		{Kind: EntryChannel, Login: "peer_b", IsLive: true},
+	}
+	m.overlayCursor = 0
+
+	m = updateKey(m, "x")
+
+	if len(m.relatedStreams) != 1 {
+		t.Errorf("x should remove the row; len = %d, want 1", len(m.relatedStreams))
+	}
+	if len(m.relatedStreams) > 0 && m.relatedStreams[0].Login != "peer_b" {
+		t.Errorf("x should keep non-selected rows; got %q", m.relatedStreams[0].Login)
+	}
+	if state.lastIgnoreChannel != "peer_a" || !state.lastIgnoreAdd {
+		t.Errorf("x should call ToggleIgnore(peer_a, true); got (%q, %v)",
+			state.lastIgnoreChannel, state.lastIgnoreAdd)
+	}
+}
+
+func TestModel_RelatedOverlay_XOnLastRowClampsCursor(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.overlay = overlayRelated
+	m.overlayChannel = "target"
+	m.relatedStreams = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "peer_a", IsLive: true},
+		{Kind: EntryChannel, Login: "peer_b", IsLive: true},
+	}
+	m.overlayCursor = 1 // last row
+
+	m = updateKey(m, "x")
+
+	if len(m.relatedStreams) != 1 {
+		t.Fatalf("expected 1 row remaining, got %d", len(m.relatedStreams))
+	}
+	if m.overlayCursor != 0 {
+		t.Errorf("cursor after ignoring last row = %d, want 0", m.overlayCursor)
+	}
+}
+
 func TestModel_SearchMode_SlashActivates(t *testing.T) {
 	state := &mockState{}
 	m := newTestModel(state)

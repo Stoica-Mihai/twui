@@ -460,7 +460,8 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		RelatedChannels: func(c context.Context, channel, category string) ([]ui.DiscoveryEntry, error) {
 			// Twitch removed the Host feature in Oct 2022, so "related" now
 			// means other live channels in the same category. Fetch the
-			// category's top streams, drop the subject channel, cap at 10.
+			// category's top streams, drop the subject channel and anyone
+			// on the ignore list, cap at maxRelatedStreams.
 			streams, _, err := api.CategoryStreams(c, category, maxRelatedStreams, "")
 			if err != nil {
 				return nil, err
@@ -468,6 +469,9 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			entries := make([]ui.DiscoveryEntry, 0, len(streams))
 			for _, s := range streams {
 				if strings.EqualFold(s.Login, channel) {
+					continue
+				}
+				if ignSet[s.Login] {
 					continue
 				}
 				entries = append(entries, ui.DiscoveryEntry{
