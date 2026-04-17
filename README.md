@@ -2,8 +2,6 @@
   <img src="assets/logo-wordmark.svg" alt="twui" width="280">
 </p>
 
-# twui
-
 [![Release](https://img.shields.io/github/v/release/Stoica-Mihai/twui)](https://github.com/Stoica-Mihai/twui/releases/latest)
 [![CI](https://github.com/Stoica-Mihai/twui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Stoica-Mihai/twui/actions/workflows/ci.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/Stoica-Mihai/twui)](go.mod)
