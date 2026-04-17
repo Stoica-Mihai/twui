@@ -11,6 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
 	"github.com/mcs/twui/pkg/chat"
@@ -315,10 +316,19 @@ func (m Model) renderChatPane(height int) []string {
 		return lines
 	}
 
-	msgs := sess.View(height - 1)
+	// Each message may wrap to multiple lines, so fetch `height-1` messages
+	// (enough if every message is one line), collect their wrapped lines,
+	// and keep the newest `height-1` lines so the tail stays visible.
+	contentHeight := height - 1
+	msgs := sess.View(contentHeight)
+	var msgLines []string
 	for _, msg := range msgs {
-		lines = append(lines, m.renderChatLine(msg))
+		msgLines = append(msgLines, strings.Split(m.renderChatLine(msg), "\n")...)
 	}
+	if len(msgLines) > contentHeight {
+		msgLines = msgLines[len(msgLines)-contentHeight:]
+	}
+	lines = append(lines, msgLines...)
 	for len(lines) < height {
 		lines = append(lines, "")
 	}
@@ -377,8 +387,9 @@ func (m Model) chatFocusIndex() (idx, total int) {
 	return 0, len(m.chatOrder)
 }
 
-// renderChatLine produces one formatted row for a chat message, truncated
-// to fit within the pane width.
+// renderChatLine formats a chat message, wrapping long lines across multiple
+// rows. Returns a string with '\n' separators between wrapped rows so callers
+// can split or render as a block.
 func (m Model) renderChatLine(msg chat.Chat) string {
 	var b strings.Builder
 
@@ -408,8 +419,11 @@ func (m Model) renderChatLine(msg chat.Chat) string {
 	// Message text with emote styling in place.
 	b.WriteString(m.renderChatText(msg))
 
-	// Trim to the pane's content width.
-	return cellTruncate(b.String(), m.width-2)
+	w := m.width - 2
+	if w < 1 {
+		w = 1
+	}
+	return ansi.WrapWc(b.String(), w, " ")
 }
 
 // subBadgeLabel turns a Twitch subscriber-badge version string into a compact
