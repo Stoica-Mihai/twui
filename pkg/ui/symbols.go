@@ -10,6 +10,8 @@ type Symbols struct {
 	Reconnecting string // transient network issue (default: ⟳)
 	Favorite     string // favorite marker (default: ★)
 	LoadMore     string // "load more" affordance arrow (default: ↓)
+	ChatActive   string // chat pane autoscrolling (default: ▸)
+	ChatPaused   string // chat pane scrolled back (default: ⏸)
 }
 
 // UnicodeSymbols returns the default glyph set.
@@ -21,6 +23,8 @@ func UnicodeSymbols() Symbols {
 		Reconnecting: "⟳",
 		Favorite:     "★",
 		LoadMore:     "↓",
+		ChatActive:   "▸",
+		ChatPaused:   "⏸",
 	}
 }
 
@@ -33,5 +37,7 @@ func ASCIISymbols() Symbols {
 		Reconnecting: "~",
 		Favorite:     "*",
 		LoadMore:     "v",
+		ChatActive:   ">",
+		ChatPaused:   "||",
 	}
 }

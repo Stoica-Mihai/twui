@@ -1,6 +1,16 @@
 package ui
 
-import "github.com/mcs/twui/pkg/chat"
+import (
+	"fmt"
+	"hash/fnv"
+	"sort"
+	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/rivo/uniseg"
+
+	"github.com/mcs/twui/pkg/chat"
+)
 
 // defaultChatBacklog is the per-session message cap when no explicit size
 // is given. Tuned so a 30-messages-per-second hype moment fits several
@@ -112,3 +122,205 @@ func (s *ChatSession) NewSincePause() int { return s.newSincePause }
 
 // Len returns the current size of the message buffer (for tests / metrics).
 func (s *ChatSession) Len() int { return len(s.buffer) }
+
+// chatPaneHeight is the fixed number of lines the bottom chat pane occupies
+// when visible, including its 1-line header.
+const chatPaneHeight = 10
+
+// renderChatPane returns exactly `height` lines (first line is the header,
+// remaining are message rows). Called from render() when the pane is visible.
+func (m Model) renderChatPane(height int) []string {
+	if height < 1 {
+		return nil
+	}
+	lines := make([]string, 0, height)
+	lines = append(lines, m.renderChatHeader())
+
+	sess := m.chatSessions[m.chatFocus]
+	if sess == nil {
+		for len(lines) < height {
+			lines = append(lines, "")
+		}
+		return lines
+	}
+
+	msgs := sess.View(height - 1)
+	for _, msg := range msgs {
+		lines = append(lines, m.renderChatLine(msg))
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	return lines[:height]
+}
+
+// renderChatHeader composes the one-line status row shown above chat rows.
+// It adapts to live vs. paused state, shows the active channel and the
+// [N of M] session index, and puts the contextual key hint on the right.
+func (m Model) renderChatHeader() string {
+	sess := m.chatSessions[m.chatFocus]
+	if sess == nil {
+		return ""
+	}
+
+	idx, total := m.chatFocusIndex()
+
+	var left string
+	if sess.IsPaused() {
+		left = m.styles.favorite.Render(m.symbols.ChatPaused) +
+			" Chat — " +
+			m.styles.live.Render(sess.Channel) +
+			m.styles.favorite.Render(fmt.Sprintf(" — PAUSED · %d new", sess.NewSincePause()))
+	} else {
+		left = m.styles.live.Render(m.symbols.ChatActive) +
+			" Chat — " +
+			m.styles.live.Render(sess.Channel)
+	}
+
+	var right string
+	switch {
+	case sess.IsPaused():
+		right = m.styles.favorite.Render("Space resume")
+	case total > 1:
+		right = m.styles.text.Render(fmt.Sprintf("[%d of %d]  C cycle  [ ] scroll", idx, total))
+	default:
+		right = m.styles.text.Render("[ ] scroll")
+	}
+
+	return joinLeftRight(left, right, m.width-2)
+}
+
+// chatFocusIndex returns the 1-based position of m.chatFocus inside
+// m.chatOrder and the total session count. Returns 0,0 when focus is unset.
+func (m Model) chatFocusIndex() (idx, total int) {
+	for i, ch := range m.chatOrder {
+		if ch == m.chatFocus {
+			return i + 1, len(m.chatOrder)
+		}
+	}
+	return 0, len(m.chatOrder)
+}
+
+// renderChatLine produces one formatted row for a chat message, truncated
+// to fit within the pane width.
+func (m Model) renderChatLine(msg chat.Chat) string {
+	var b strings.Builder
+
+	// Timestamp column (fixed 8 chars + space) keeps alignment.
+	ts := "        "
+	if !msg.Sent.IsZero() {
+		ts = msg.Sent.Format("15:04:05")
+	}
+	b.WriteString(m.styles.offline.Render(ts + "  "))
+
+	// Badges (leading space separator between them).
+	for _, bdg := range msg.Badges {
+		if rendered := m.renderChatBadge(bdg); rendered != "" {
+			b.WriteString(rendered)
+			b.WriteByte(' ')
+		}
+	}
+
+	// Username + colon.
+	name := msg.DisplayName
+	if name == "" {
+		name = msg.Login
+	}
+	b.WriteString(m.chatUserStyle(msg.Login).Render(name))
+	b.WriteString(m.styles.text.Render(": "))
+
+	// Message text with emote styling in place.
+	b.WriteString(m.renderChatText(msg))
+
+	// Trim to the pane's content width.
+	return cellTruncate(b.String(), m.width-2)
+}
+
+// renderChatBadge returns a short styled label for one Twitch badge. Unknown
+// badge kinds render as empty so the row stays clean.
+func (m Model) renderChatBadge(b chat.Badge) string {
+	var label string
+	var style lipgloss.Style
+	switch b.Name {
+	case "broadcaster":
+		label, style = "[BC]", m.styles.reconnecting
+	case "moderator":
+		label, style = "[MOD]", m.styles.live
+	case "vip":
+		label, style = "[VIP]", m.styles.tabActive
+	case "subscriber":
+		label, style = "["+b.Version+"mo]", m.styles.favorite
+	default:
+		return ""
+	}
+	return style.Render(label)
+}
+
+// renderChatText applies emote styling to the parts of the message text
+// that the Twitch `emotes` tag flagged. Text outside emote ranges passes
+// through unchanged.
+func (m Model) renderChatText(c chat.Chat) string {
+	if len(c.Emotes) == 0 {
+		return m.styles.text.Render(c.Text)
+	}
+
+	type span struct{ start, end int }
+	var spans []span
+	for _, e := range c.Emotes {
+		for _, r := range e.Ranges {
+			spans = append(spans, span{r.Start, r.End})
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+
+	runes := []rune(c.Text)
+	var b strings.Builder
+	cursor := 0
+	emoteStyle := m.styles.favorite
+	textStyle := m.styles.text
+	for _, s := range spans {
+		if s.start < cursor || s.end >= len(runes) || s.end < s.start {
+			continue
+		}
+		if s.start > cursor {
+			b.WriteString(textStyle.Render(string(runes[cursor:s.start])))
+		}
+		b.WriteString(emoteStyle.Render(string(runes[s.start : s.end+1])))
+		cursor = s.end + 1
+	}
+	if cursor < len(runes) {
+		b.WriteString(textStyle.Render(string(runes[cursor:])))
+	}
+	return b.String()
+}
+
+// chatUserStyle returns a consistent theme-derived style for a given login.
+// Same login always hashes to the same slot so a user's colour is stable
+// across the whole session, while being theme-aware (monochrome yields
+// attribute-only styles since the underlying entries have no colours).
+func (m Model) chatUserStyle(login string) lipgloss.Style {
+	palette := []lipgloss.Style{
+		m.styles.live,
+		m.styles.favorite,
+		m.styles.tabActive,
+		m.styles.category,
+		m.styles.waiting,
+		m.styles.reconnecting,
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(login))
+	return palette[h.Sum32()%uint32(len(palette))]
+}
+
+// joinLeftRight puts `left` at column 0 and right-aligns `right` within `width`,
+// separating with spaces. Widths are measured after stripping ANSI so styled
+// segments don't inflate the padding count.
+func joinLeftRight(left, right string, width int) string {
+	leftW := uniseg.StringWidth(stripANSI(left))
+	rightW := uniseg.StringWidth(stripANSI(right))
+	gap := width - leftW - rightW
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}

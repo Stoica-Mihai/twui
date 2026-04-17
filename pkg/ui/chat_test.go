@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/mcs/twui/pkg/chat"
@@ -225,5 +226,213 @@ func TestChatSession_ZeroOrNegativeScrollNoops(t *testing.T) {
 	s.ScrollForward(-5)
 	if s.IsPaused() {
 		t.Error("zero/negative scrolls should not pause")
+	}
+}
+
+// --- Renderer tests ---
+
+// chatModel returns a width-160 Model with one chat session focused.
+func chatModel(t *testing.T, sessions ...string) Model {
+	t.Helper()
+	m := newTestModel(&mockState{})
+	m.width = 160
+	m.height = 40
+	m.chatVisible = true
+	for _, ch := range sessions {
+		m.chatSessions[ch] = NewChatSession(ch, 500)
+		m.chatOrder = append(m.chatOrder, ch)
+	}
+	if len(sessions) > 0 {
+		m.chatFocus = sessions[0]
+	}
+	return m
+}
+
+func TestRenderChatPane_ReturnsExactHeight(t *testing.T) {
+	m := chatModel(t, "shroud")
+	out := m.renderChatPane(chatPaneHeight)
+	if len(out) != chatPaneHeight {
+		t.Errorf("pane lines = %d, want %d", len(out), chatPaneHeight)
+	}
+}
+
+func TestRenderChatPane_ZeroHeightReturnsNil(t *testing.T) {
+	m := chatModel(t, "shroud")
+	if out := m.renderChatPane(0); out != nil {
+		t.Errorf("height 0 should yield nil, got %v", out)
+	}
+}
+
+func TestRenderChatHeader_LiveShowsActiveGlyph(t *testing.T) {
+	m := chatModel(t, "shroud")
+	h := m.renderChatHeader()
+	if !strings.Contains(stripANSI(h), m.symbols.ChatActive) {
+		t.Errorf("header missing active glyph: %q", stripANSI(h))
+	}
+	if !strings.Contains(stripANSI(h), "shroud") {
+		t.Errorf("header missing channel name: %q", stripANSI(h))
+	}
+	if strings.Contains(stripANSI(h), "PAUSED") {
+		t.Errorf("live header should not mention PAUSED: %q", stripANSI(h))
+	}
+}
+
+func TestRenderChatHeader_PausedShowsPausedGlyphAndCounter(t *testing.T) {
+	m := chatModel(t, "shroud")
+	sess := m.chatSessions["shroud"]
+	pushN(sess, 20)
+	sess.ScrollBack(3)
+	for i := 0; i < 7; i++ {
+		sess.Push(mkMsg("new"))
+	}
+
+	h := m.renderChatHeader()
+	plain := stripANSI(h)
+	if !strings.Contains(plain, m.symbols.ChatPaused) {
+		t.Errorf("paused header missing paused glyph: %q", plain)
+	}
+	if !strings.Contains(plain, "PAUSED") {
+		t.Errorf("paused header missing PAUSED label: %q", plain)
+	}
+	if !strings.Contains(plain, "7 new") {
+		t.Errorf("paused header missing new counter: %q", plain)
+	}
+	if !strings.Contains(plain, "Space resume") {
+		t.Errorf("paused header missing resume hint: %q", plain)
+	}
+}
+
+func TestRenderChatHeader_MultipleSessionsShowsIndexAndCycle(t *testing.T) {
+	m := chatModel(t, "shroud", "xqc", "zackrawrr")
+	h := m.renderChatHeader()
+	plain := stripANSI(h)
+	if !strings.Contains(plain, "1 of 3") {
+		t.Errorf("header missing index: %q", plain)
+	}
+	if !strings.Contains(plain, "C cycle") {
+		t.Errorf("header missing cycle hint: %q", plain)
+	}
+}
+
+func TestRenderChatHeader_SingleSessionOmitsCycleHint(t *testing.T) {
+	m := chatModel(t, "shroud")
+	plain := stripANSI(m.renderChatHeader())
+	if strings.Contains(plain, "C cycle") {
+		t.Errorf("single-session header should not advertise cycle: %q", plain)
+	}
+}
+
+func TestRenderChatLine_FormatsBadgesAndEmotes(t *testing.T) {
+	m := chatModel(t, "c")
+	msg := chat.Chat{
+		Login:       "ron",
+		DisplayName: "Ron",
+		Text:        "Kappa hello",
+		Badges: []chat.Badge{
+			{Name: "broadcaster", Version: "1"},
+			{Name: "subscriber", Version: "12"},
+		},
+		Emotes: []chat.Emote{
+			{ID: "25", Ranges: []chat.Range{{Start: 0, End: 4}}, Name: "Kappa"},
+		},
+	}
+	plain := stripANSI(m.renderChatLine(msg))
+	if !strings.Contains(plain, "[BC]") {
+		t.Errorf("missing [BC]: %q", plain)
+	}
+	if !strings.Contains(plain, "[12mo]") {
+		t.Errorf("missing [12mo] sub badge: %q", plain)
+	}
+	if !strings.Contains(plain, "Ron:") {
+		t.Errorf("missing display name and colon: %q", plain)
+	}
+	if !strings.Contains(plain, "Kappa hello") {
+		t.Errorf("missing text content (emote styling is in-place): %q", plain)
+	}
+}
+
+func TestRenderChatLine_FallsBackToLoginWhenNoDisplayName(t *testing.T) {
+	m := chatModel(t, "c")
+	msg := chat.Chat{Login: "ron", Text: "hi"}
+	plain := stripANSI(m.renderChatLine(msg))
+	if !strings.Contains(plain, "ron:") {
+		t.Errorf("expected login fallback: %q", plain)
+	}
+}
+
+func TestRenderChatLine_UnknownBadgeIsSkipped(t *testing.T) {
+	m := chatModel(t, "c")
+	msg := chat.Chat{
+		Login: "r",
+		Text:  "hi",
+		Badges: []chat.Badge{
+			{Name: "glitchcon2020", Version: "1"}, // unknown → skipped
+			{Name: "moderator", Version: "1"},
+		},
+	}
+	plain := stripANSI(m.renderChatLine(msg))
+	if strings.Contains(plain, "glitchcon") {
+		t.Errorf("unknown badge leaked into output: %q", plain)
+	}
+	if !strings.Contains(plain, "[MOD]") {
+		t.Errorf("known badge missing: %q", plain)
+	}
+}
+
+func TestChatUserStyle_Stable(t *testing.T) {
+	m := chatModel(t, "c")
+	a1 := m.chatUserStyle("alice").Render("x")
+	a2 := m.chatUserStyle("alice").Render("x")
+	if a1 != a2 {
+		t.Errorf("same login should yield identical output: %q vs %q", a1, a2)
+	}
+}
+
+func TestRenderChatText_NoEmotesPassesThrough(t *testing.T) {
+	m := chatModel(t, "c")
+	msg := chat.Chat{Text: "hello world"}
+	if !strings.Contains(stripANSI(m.renderChatText(msg)), "hello world") {
+		t.Errorf("text missing: %q", m.renderChatText(msg))
+	}
+}
+
+func TestRenderChatText_OverlappingRangesDropSecond(t *testing.T) {
+	m := chatModel(t, "c")
+	msg := chat.Chat{
+		Text: "Kappa",
+		Emotes: []chat.Emote{
+			{ID: "25", Ranges: []chat.Range{{Start: 0, End: 4}}, Name: "Kappa"},
+			{ID: "26", Ranges: []chat.Range{{Start: 2, End: 4}}, Name: "ppa"}, // overlapping — skipped
+		},
+	}
+	plain := stripANSI(m.renderChatText(msg))
+	if plain != "Kappa" {
+		t.Errorf("overlapping-emote render = %q, want Kappa", plain)
+	}
+}
+
+func TestRenderChatText_OutOfRangeEmoteIgnored(t *testing.T) {
+	m := chatModel(t, "c")
+	msg := chat.Chat{
+		Text:   "hi",
+		Emotes: []chat.Emote{{ID: "x", Ranges: []chat.Range{{Start: 5, End: 9}}, Name: "oops"}},
+	}
+	plain := stripANSI(m.renderChatText(msg))
+	if plain != "hi" {
+		t.Errorf("out-of-range emote should be ignored: %q", plain)
+	}
+}
+
+func TestJoinLeftRight_FillsGap(t *testing.T) {
+	got := joinLeftRight("L", "R", 10)
+	if got != "L        R" {
+		t.Errorf("joinLeftRight = %q", got)
+	}
+}
+
+func TestJoinLeftRight_MinimumOneSpace(t *testing.T) {
+	got := joinLeftRight("LLLLL", "RRRRR", 5) // overflow
+	if !strings.Contains(got, " ") {
+		t.Errorf("joinLeftRight should always insert at least one space: %q", got)
 	}
 }

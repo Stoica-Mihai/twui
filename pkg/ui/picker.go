@@ -156,6 +156,12 @@ type Model struct {
 	sessions map[string]*playbackSession
 	lastGen  int
 
+	// chat pane
+	chatSessions map[string]*ChatSession // keyed by channel login
+	chatOrder    []string                // launch order for C-cycle
+	chatFocus    string                  // channel of the session currently in the pane
+	chatVisible  bool                    // toggled by `c`; set true on first session
+
 	// theme picker index
 	themeIdx int
 
@@ -176,6 +182,7 @@ func NewModel(fns DiscoveryFuncs, theme Theme, refreshInterval time.Duration) *M
 		styles:           buildStyles(theme),
 		symbols:          UnicodeSymbols(),
 		sessions:         make(map[string]*playbackSession),
+		chatSessions:     make(map[string]*ChatSession),
 		ctx:              ctx,
 		cancel:           cancel,
 		refreshInterval:  refreshInterval,
