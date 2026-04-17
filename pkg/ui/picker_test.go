@@ -120,16 +120,16 @@ func TestModel_WatchListResult_SortsLiveFirstByViewers(t *testing.T) {
 	m := newTestModel(state)
 
 	entries := []DiscoveryEntry{
-		{Kind: EntryChannel, Login: "lirik", IsLive: false},
-		{Kind: EntryChannel, Login: "insym", IsLive: true, ViewerCount: 3900},
-		{Kind: EntryChannel, Login: "trick2g", IsLive: false},
-		{Kind: EntryChannel, Login: "ariathome", IsLive: false},
-		{Kind: EntryChannel, Login: "eslcs", IsLive: true, ViewerCount: 65500},
+		{Kind: EntryChannel, Login: "a", IsLive: false},
+		{Kind: EntryChannel, Login: "b", IsLive: true, ViewerCount: 3900},
+		{Kind: EntryChannel, Login: "c", IsLive: false},
+		{Kind: EntryChannel, Login: "d", IsLive: false},
+		{Kind: EntryChannel, Login: "e", IsLive: true, ViewerCount: 65500},
 	}
 	newM, _ := m.Update(watchListResultMsg{entries: entries, err: nil})
 	m2 := newM.(Model)
 
-	wantOrder := []string{"eslcs", "insym", "lirik", "trick2g", "ariathome"}
+	wantOrder := []string{"e", "b", "a", "c", "d"}
 	if len(m2.watchList) != len(wantOrder) {
 		t.Fatalf("watchList len = %d, want %d", len(m2.watchList), len(wantOrder))
 	}

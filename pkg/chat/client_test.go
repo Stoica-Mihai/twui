@@ -65,7 +65,7 @@ func readLines(t *testing.T, r io.Reader, n int) []string {
 }
 
 func TestClient_HandshakeSequence(t *testing.T) {
-	_, server, _, _ := pipeClient(t, "shroud")
+	_, server, _, _ := pipeClient(t, "MeNotSanta")
 
 	lines := readLines(t, server, 3)
 	if !strings.HasPrefix(lines[0], "CAP REQ") {
@@ -74,7 +74,7 @@ func TestClient_HandshakeSequence(t *testing.T) {
 	if !strings.HasPrefix(lines[1], "NICK justinfan") {
 		t.Errorf("line 1: %q", lines[1])
 	}
-	if lines[2] != "JOIN #shroud" {
+	if lines[2] != "JOIN #MeNotSanta" {
 		t.Errorf("line 2: %q", lines[2])
 	}
 }

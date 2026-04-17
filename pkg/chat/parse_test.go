@@ -350,10 +350,10 @@ func TestAsChat_MalformedEmotesIgnored(t *testing.T) {
 }
 
 func TestAsChat_ChannelStripsHash(t *testing.T) {
-	line := `:r!r@r PRIVMSG #shroud :hi`
+	line := `:r!r@r PRIVMSG #MeNotSanta :hi`
 	m, _ := Parse(line)
 	c, _ := m.AsChat()
-	if c.Channel != "shroud" {
+	if c.Channel != "MeNotSanta" {
 		t.Errorf("Channel = %q", c.Channel)
 	}
 }

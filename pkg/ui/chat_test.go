@@ -252,7 +252,7 @@ func chatModel(t *testing.T, sessions ...string) Model {
 }
 
 func TestRenderChatPane_ReturnsExactHeight(t *testing.T) {
-	m := chatModel(t, "shroud")
+	m := chatModel(t, "MeNotSanta")
 	out := m.renderChatPane(chatPaneHeight)
 	if len(out) != chatPaneHeight {
 		t.Errorf("pane lines = %d, want %d", len(out), chatPaneHeight)
@@ -260,19 +260,19 @@ func TestRenderChatPane_ReturnsExactHeight(t *testing.T) {
 }
 
 func TestRenderChatPane_ZeroHeightReturnsNil(t *testing.T) {
-	m := chatModel(t, "shroud")
+	m := chatModel(t, "MeNotSanta")
 	if out := m.renderChatPane(0); out != nil {
 		t.Errorf("height 0 should yield nil, got %v", out)
 	}
 }
 
 func TestRenderChatHeader_LiveShowsActiveGlyph(t *testing.T) {
-	m := chatModel(t, "shroud")
+	m := chatModel(t, "MeNotSanta")
 	h := m.renderChatHeader()
 	if !strings.Contains(stripANSI(h), m.symbols.ChatActive) {
 		t.Errorf("header missing active glyph: %q", stripANSI(h))
 	}
-	if !strings.Contains(stripANSI(h), "shroud") {
+	if !strings.Contains(stripANSI(h), "MeNotSanta") {
 		t.Errorf("header missing channel name: %q", stripANSI(h))
 	}
 	if strings.Contains(stripANSI(h), "PAUSED") {
@@ -281,8 +281,8 @@ func TestRenderChatHeader_LiveShowsActiveGlyph(t *testing.T) {
 }
 
 func TestRenderChatHeader_PausedShowsPausedGlyphAndCounter(t *testing.T) {
-	m := chatModel(t, "shroud")
-	sess := m.chatSessions["shroud"]
+	m := chatModel(t, "MeNotSanta")
+	sess := m.chatSessions["MeNotSanta"]
 	pushN(sess, 20)
 	sess.ScrollBack(3)
 	for i := 0; i < 7; i++ {
@@ -306,7 +306,7 @@ func TestRenderChatHeader_PausedShowsPausedGlyphAndCounter(t *testing.T) {
 }
 
 func TestRenderChatHeader_MultipleSessionsShowsIndexAndCycle(t *testing.T) {
-	m := chatModel(t, "shroud", "xqc", "zackrawrr")
+	m := chatModel(t, "MeNotSanta", "alpha", "beta")
 	h := m.renderChatHeader()
 	plain := stripANSI(h)
 	if !strings.Contains(plain, "1 of 3") {
@@ -318,7 +318,7 @@ func TestRenderChatHeader_MultipleSessionsShowsIndexAndCycle(t *testing.T) {
 }
 
 func TestRenderChatHeader_SingleSessionOmitsCycleHint(t *testing.T) {
-	m := chatModel(t, "shroud")
+	m := chatModel(t, "MeNotSanta")
 	plain := stripANSI(m.renderChatHeader())
 	if strings.Contains(plain, "c cycle") {
 		t.Errorf("single-session header should not advertise cycle: %q", plain)
@@ -354,7 +354,7 @@ func TestRenderFooter_AdvertisesCChatWhenPaneHiddenAndSessionsExist(t *testing.T
 
 func TestRenderChatHeader_AdvertisesCHideInEveryState(t *testing.T) {
 	// Live single-session.
-	m := chatModel(t, "shroud")
+	m := chatModel(t, "MeNotSanta")
 	if plain := stripANSI(m.renderChatHeader()); !strings.Contains(plain, "C hide") {
 		t.Errorf("live single-session header missing C hide: %q", plain)
 	}
@@ -366,8 +366,8 @@ func TestRenderChatHeader_AdvertisesCHideInEveryState(t *testing.T) {
 	}
 
 	// Paused.
-	m = chatModel(t, "shroud")
-	s := m.chatSessions["shroud"]
+	m = chatModel(t, "MeNotSanta")
+	s := m.chatSessions["MeNotSanta"]
 	pushN(s, 10)
 	s.ScrollBack(3)
 	if plain := stripANSI(m.renderChatHeader()); !strings.Contains(plain, "C hide") {
@@ -501,9 +501,9 @@ func TestChatPaneActive_RequiresVisibleAndSessions(t *testing.T) {
 		t.Error("no sessions → chatPaneActive should be false")
 	}
 
-	m.chatSessions["shroud"] = NewChatSession("shroud", 500)
-	m.chatOrder = []string{"shroud"}
-	m.chatFocus = "shroud"
+	m.chatSessions["MeNotSanta"] = NewChatSession("MeNotSanta", 500)
+	m.chatOrder = []string{"MeNotSanta"}
+	m.chatFocus = "MeNotSanta"
 	m.chatVisible = false
 
 	if m.chatPaneActive() {
@@ -801,17 +801,17 @@ func TestChatConfig_AutoOpenFalseSkipsConnectOnLaunch(t *testing.T) {
 	m.fns.Launch = func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string), notice func(string)) {
 	}
 
-	newM, _ := m.launchStream("shroud", "", "")
+	newM, _ := m.launchStream("MeNotSanta", "", "")
 	t.Cleanup(func() {
-		if sess, ok := newM.sessions["shroud"]; ok {
+		if sess, ok := newM.sessions["MeNotSanta"]; ok {
 			sess.cancel()
 		}
 	})
 
-	if _, ok := newM.chatSessions["shroud"]; ok {
+	if _, ok := newM.chatSessions["MeNotSanta"]; ok {
 		t.Error("AutoOpen=false should not create a chat session on launch")
 	}
-	if _, ok := newM.chatConns["shroud"]; ok {
+	if _, ok := newM.chatConns["MeNotSanta"]; ok {
 		t.Error("AutoOpen=false should not open an IRC connection on launch")
 	}
 	if newM.chatVisible {
@@ -825,17 +825,17 @@ func TestChatConfig_AutoOpenTrueConnectsOnLaunch(t *testing.T) {
 	m.fns.Launch = func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string), notice func(string)) {
 	}
 
-	newM, _ := m.launchStream("shroud", "", "")
+	newM, _ := m.launchStream("MeNotSanta", "", "")
 	t.Cleanup(func() {
-		if conn, ok := newM.chatConns["shroud"]; ok {
+		if conn, ok := newM.chatConns["MeNotSanta"]; ok {
 			conn.cancel()
 		}
-		if sess, ok := newM.sessions["shroud"]; ok {
+		if sess, ok := newM.sessions["MeNotSanta"]; ok {
 			sess.cancel()
 		}
 	})
 
-	if _, ok := newM.chatSessions["shroud"]; !ok {
+	if _, ok := newM.chatSessions["MeNotSanta"]; !ok {
 		t.Error("AutoOpen=true should create a chat session on launch")
 	}
 	if !newM.chatVisible {
@@ -847,13 +847,13 @@ func TestChatLifecycle_StartChatAutoshows(t *testing.T) {
 	m := newTestModel(&mockState{})
 	m.chatVisible = false
 
-	newM, _, ok := m.startChat("shroud")
+	newM, _, ok := m.startChat("MeNotSanta")
 	if !ok {
 		t.Fatal("startChat should return ok=true for a fresh channel")
 	}
 	// Cleanup the goroutine we just spawned.
 	t.Cleanup(func() {
-		if conn, ok := newM.chatConns["shroud"]; ok {
+		if conn, ok := newM.chatConns["MeNotSanta"]; ok {
 			conn.cancel()
 		}
 	})
@@ -861,11 +861,11 @@ func TestChatLifecycle_StartChatAutoshows(t *testing.T) {
 	if !newM.chatVisible {
 		t.Error("startChat should flip chatVisible on (first session)")
 	}
-	if newM.chatFocus != "shroud" {
-		t.Errorf("chatFocus = %q, want shroud", newM.chatFocus)
+	if newM.chatFocus != "MeNotSanta" {
+		t.Errorf("chatFocus = %q, want MeNotSanta", newM.chatFocus)
 	}
-	if _, ok := newM.chatSessions["shroud"]; !ok {
-		t.Error("chatSessions missing shroud entry")
+	if _, ok := newM.chatSessions["MeNotSanta"]; !ok {
+		t.Error("chatSessions missing MeNotSanta entry")
 	}
 }
 
@@ -954,17 +954,17 @@ func TestMouseWheel_ChatNotActiveFallsThrough(t *testing.T) {
 
 func TestChatLifecycle_StartChatIsIdempotent(t *testing.T) {
 	m := newTestModel(&mockState{})
-	m, _, ok := m.startChat("shroud")
+	m, _, ok := m.startChat("MeNotSanta")
 	if !ok {
 		t.Fatal("first startChat should ok")
 	}
 	t.Cleanup(func() {
-		if conn, ok := m.chatConns["shroud"]; ok {
+		if conn, ok := m.chatConns["MeNotSanta"]; ok {
 			conn.cancel()
 		}
 	})
 
-	_, cmd, ok2 := m.startChat("shroud")
+	_, cmd, ok2 := m.startChat("MeNotSanta")
 	if ok2 {
 		t.Error("second startChat for same channel should return ok=false")
 	}
@@ -987,16 +987,16 @@ func TestRender_BodyShrinksWhenChatPaneShows(t *testing.T) {
 	}
 
 	// Turn chat on with a session; a `▸ Chat —` line must appear.
-	m.chatSessions["shroud"] = NewChatSession("shroud", 500)
-	m.chatOrder = []string{"shroud"}
-	m.chatFocus = "shroud"
+	m.chatSessions["MeNotSanta"] = NewChatSession("MeNotSanta", 500)
+	m.chatOrder = []string{"MeNotSanta"}
+	m.chatFocus = "MeNotSanta"
 	m.chatVisible = true
 
 	out2 := m.render()
 	if !strings.Contains(stripANSI(out2), m.symbols.ChatActive) {
 		t.Error("chat pane missing after enabling")
 	}
-	if !strings.Contains(stripANSI(out2), "Chat — shroud") {
+	if !strings.Contains(stripANSI(out2), "Chat — MeNotSanta") {
 		t.Errorf("pane header missing channel name")
 	}
 
