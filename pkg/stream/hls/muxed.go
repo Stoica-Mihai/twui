@@ -9,10 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mcs/twui/pkg/stream"
-	"syscall"
 )
 
 // contextOpenFile opens a file in a goroutine and selects on context

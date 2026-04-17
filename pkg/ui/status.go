@@ -4,7 +4,7 @@ package ui
 type Status int
 
 const (
-	StatusWaiting      Status = iota
+	StatusWaiting Status = iota
 	StatusPlaying
 	StatusAdBreak
 	StatusReconnecting

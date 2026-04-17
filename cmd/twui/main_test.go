@@ -87,9 +87,9 @@ func TestStreamWeight_Kbps(t *testing.T) {
 
 func TestSelectBestQuality_PicksSource(t *testing.T) {
 	streams := map[string]stream.Stream{
-		"source":  ms(""),
-		"720p60":  ms(""),
-		"480p":    ms(""),
+		"source":     ms(""),
+		"720p60":     ms(""),
+		"480p":       ms(""),
 		"audio_only": ms(""),
 	}
 	got := selectBestQuality(streams)

@@ -70,7 +70,7 @@ type (
 		appendMode bool
 		refresh    bool // true when triggered by auto-refresh; cursor preserved
 	}
-	tickMsg time.Time
+	tickMsg          time.Time
 	qualityResultMsg struct {
 		channel   string
 		avatarURL string
@@ -85,7 +85,7 @@ type (
 	searchDebounceMsg struct {
 		query string
 	}
-	titleScrollMsg struct{}
+	titleScrollMsg  struct{}
 	statusUpdateMsg struct {
 		channel string
 		status  Status
@@ -122,14 +122,13 @@ type Model struct {
 	symbols Symbols
 
 	// data per view
-	watchList  []DiscoveryEntry
-	browseList []DiscoveryEntry
+	watchList        []DiscoveryEntry
+	browseList       []DiscoveryEntry
 	browseNextCursor string
-	searchList  []DiscoveryEntry
-	searchQuery string
-	searchInput string
-	searching   bool
-	ignoredList []DiscoveryEntry
+	searchList       []DiscoveryEntry
+	searchQuery      string
+	searchInput      string
+	searching        bool
 
 	categoryStack  []string
 	categoryList   []DiscoveryEntry
@@ -145,13 +144,13 @@ type Model struct {
 	refreshing       bool
 
 	// overlays
-	overlay        overlayMode
-	overlayList    []string
-	overlayCursor  int
+	overlay          overlayMode
+	overlayList      []string
+	overlayCursor    int
 	overlayChannel   string
 	overlayAvatarURL string
-	relatedHosts   []DiscoveryEntry
-	relatedLoading bool
+	relatedHosts     []DiscoveryEntry
+	relatedLoading   bool
 
 	// playback
 	sessions map[string]*playbackSession
@@ -492,10 +491,9 @@ func (m Model) render() string {
 	return result
 }
 
-
 func (m Model) renderFooter() string {
 	if m.notice != "" {
-		return m.styles.live.Render(cellTruncate("  "+m.notice, m.width - 2))
+		return m.styles.live.Render(cellTruncate("  "+m.notice, m.width-2))
 	}
 
 	hint := func(key, desc string) string {
@@ -850,8 +848,10 @@ func (m Model) filterIgnored(entries []DiscoveryEntry) []DiscoveryEntry {
 
 // --- Commands ---
 
+// loadWatchList returns a Cmd that fetches the favorites view. The caller
+// should set m.loading = true if the spinner is desired — a value-receiver
+// method can't mutate the Model that the event loop will actually use.
 func (m Model) loadWatchList() tea.Cmd {
-	m.loading = true
 	ctx := m.ctx
 	fns := m.fns
 	return func() tea.Msg {
@@ -862,8 +862,9 @@ func (m Model) loadWatchList() tea.Cmd {
 	}
 }
 
+// loadBrowse returns a Cmd that fetches the top-level category list. See
+// loadWatchList for the m.loading ownership contract.
 func (m Model) loadBrowse() tea.Cmd {
-	m.loading = true
 	ctx := m.ctx
 	fns := m.fns
 	return func() tea.Msg {
@@ -1085,4 +1086,3 @@ func waitPlayback(ctx context.Context, ch <-chan statusUpdateMsg, channel string
 		}
 	}
 }
-

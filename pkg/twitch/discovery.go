@@ -205,11 +205,11 @@ func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, li
 				Edges []struct {
 					Cursor string `json:"cursor"`
 					Node   struct {
-						ID        string `json:"id"`
-						Title     string `json:"title"`
-						ViewersCount int `json:"viewersCount"`
-						CreatedAt string `json:"createdAt"`
-						Broadcaster struct {
+						ID           string `json:"id"`
+						Title        string `json:"title"`
+						ViewersCount int    `json:"viewersCount"`
+						CreatedAt    string `json:"createdAt"`
+						Broadcaster  struct {
 							ID              string `json:"id"`
 							Login           string `json:"login"`
 							DisplayName     string `json:"displayName"`

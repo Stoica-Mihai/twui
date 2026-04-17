@@ -58,17 +58,6 @@ func gqlErrors(msg string) http.HandlerFunc {
 	}
 }
 
-// isPersistedQueryRequest returns true when the request body contains
-// a persisted query extension (not a full query text).
-func isPersistedQueryRequest(r *http.Request) bool {
-	var body map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		return false
-	}
-	_, hasQuery := body["query"]
-	return !hasQuery
-}
-
 // --- doGQL tests ---
 
 func TestDoGQL_EmptyHash_SkipsPersistedQuery(t *testing.T) {
@@ -424,7 +413,7 @@ func TestNewClientSessionID_Length(t *testing.T) {
 func TestNewClientSessionID_HexCharsOnly(t *testing.T) {
 	id := newClientSessionID()
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("newClientSessionID() = %q, contains non-hex char %c", id, c)
 		}
 	}

@@ -180,8 +180,8 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 	if isAd {
 		if !lastWasAd {
 			slog.Debug("Filtering ad segment", "num", seg.Num, "title", seg.Title)
-			if t.HLSStream.Filtered != nil {
-				t.HLSStream.Filtered.Pause()
+			if t.Filtered != nil {
+				t.Filtered.Pause()
 			}
 		}
 		t.mu.Lock()
@@ -191,8 +191,8 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 	}
 
 	if lastWasAd {
-		if t.HLSStream.Filtered != nil {
-			t.HLSStream.Filtered.Resume()
+		if t.Filtered != nil {
+			t.Filtered.Resume()
 		}
 		if onAdEnd != nil {
 			onAdEnd()

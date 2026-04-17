@@ -136,7 +136,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	// Redirect slog away from stderr before starting the TUI.
 	// Any slog output (from hls.go, api.go, etc.) would otherwise appear
 	// interleaved with Bubble Tea's terminal rendering.
-	var logDest io.Writer = io.Discard
+	var logDest = io.Discard
 	if verbose {
 		cacheDir, err := os.UserCacheDir()
 		if err == nil {
@@ -850,4 +850,3 @@ func toSet(list []string) map[string]bool {
 	}
 	return m
 }
-

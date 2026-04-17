@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	DefaultClientID    = "kimne78kx3ncx6brgo4mv6wki5h1ko"
-	GQLEndpoint        = "https://gql.twitch.tv/gql"
-	IntegrityEndpoint  = "https://passport.twitch.tv/integrity"
-	DefaultUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
+	DefaultClientID   = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+	GQLEndpoint       = "https://gql.twitch.tv/gql"
+	IntegrityEndpoint = "https://passport.twitch.tv/integrity"
+	DefaultUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
 
 	maxGQLRetryAfter      = 30 * time.Second
 	integrityExpiryBuffer = time.Minute // refresh before this much time remains

@@ -2024,13 +2024,13 @@ func TestCalcVisibleStart(t *testing.T) {
 		cursor, height int
 		want           int
 	}{
-		{0, 20, 0},         // cursor at top, no scroll needed
-		{5, 20, 0},         // cursor near top, still no scroll
-		{17, 20, 0},        // cursor at height-3, still visible
-		{18, 20, 1},        // cursor at height-2, starts scrolling
-		{25, 20, 8},        // cursor well past visible area
-		{0, 5, 0},          // small height, cursor at top
-		{10, 5, 8},         // small height, cursor past visible area
+		{0, 20, 0},  // cursor at top, no scroll needed
+		{5, 20, 0},  // cursor near top, still no scroll
+		{17, 20, 0}, // cursor at height-3, still visible
+		{18, 20, 1}, // cursor at height-2, starts scrolling
+		{25, 20, 8}, // cursor well past visible area
+		{0, 5, 0},   // small height, cursor at top
+		{10, 5, 8},  // small height, cursor past visible area
 	}
 	for _, tt := range tests {
 		got := calcVisibleStart(tt.cursor, tt.height)

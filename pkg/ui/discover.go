@@ -19,15 +19,15 @@ type DiscoveryEntry struct {
 	Kind EntryKind
 
 	// Channel fields (EntryChannel)
-	Login           string
-	DisplayName     string
-	Title           string
-	Category        string
-	ViewerCount     int
-	StartedAt       time.Time
-	AvatarURL       string
-	IsFavorite      bool
-	IsLive          bool
+	Login       string
+	DisplayName string
+	Title       string
+	Category    string
+	ViewerCount int
+	StartedAt   time.Time
+	AvatarURL   string
+	IsFavorite  bool
+	IsLive      bool
 
 	// Category fields (EntryCategory)
 	CategoryName    string
