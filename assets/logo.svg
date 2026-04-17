@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 80" width="280" height="80" role="img" aria-label="twui">
+  <title>twui</title>
+  <!-- prompt -->
+  <text x="4" y="60" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="58" font-weight="700" fill="#9146FF">&gt;</text>
+  <!-- play triangle -->
+  <polygon points="50,24 50,60 86,42" fill="#9146FF"/>
+  <!-- wordmark (adapts to GitHub light/dark via currentColor) -->
+  <text x="100" y="60" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="46" font-weight="700" fill="currentColor">twui</text>
+</svg>

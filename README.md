@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="twui" width="280">
+</p>
+
 # twui
 
 [![Release](https://img.shields.io/github/v/release/Stoica-Mihai/twui)](https://github.com/Stoica-Mihai/twui/releases/latest)
