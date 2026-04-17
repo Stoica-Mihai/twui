@@ -12,6 +12,10 @@ Anonymous Twitch TUI for browsing and watching live streams.
 
 No Twitch account, no OAuth, no tracking. Built-in ad blocking. Runs mpv or vlc under the hood.
 
+<p align="center">
+  <img src="assets/demo.gif" alt="twui demo" width="800">
+</p>
+
 ## Features
 
 - Browse live streams by **category** or **search** channels by name
