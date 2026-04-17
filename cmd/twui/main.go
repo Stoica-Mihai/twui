@@ -90,6 +90,7 @@ func init() {
 	rootCmd.PersistentFlags().Bool("ascii", false, "Use ASCII-only glyphs (auto-enabled for TERM=linux or TWUI_ASCII)")
 	rootCmd.PersistentFlags().Bool("chat", true, "Connect to Twitch chat for playing streams")
 	rootCmd.PersistentFlags().Bool("chat-auto-open", false, "Open the chat pane automatically when a stream launches")
+	rootCmd.PersistentFlags().Bool("demo", false, "Run with mock data; skip Twitch API, media player, and real IRC")
 }
 
 // loadChatConfig builds a ui.ChatConfig from the --chat* flags and the [chat]
@@ -184,6 +185,11 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		}
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(logDest, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	demo, _ := cmd.Root().PersistentFlags().GetBool("demo")
+	if demo {
+		return runDemoTUI(cmd)
+	}
 
 	sess := session.New()
 	defer sess.Close()
@@ -536,6 +542,36 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		return fmt.Errorf("twui: %w", err)
 	}
 
+	return nil
+}
+
+// runDemoTUI is the --demo variant of runTUI: no Twitch API, no media
+// player, no IRC connect. Every discovery callback and the chat source are
+// backed by hardcoded fixtures in demo.go.
+func runDemoTUI(cmd *cobra.Command) error {
+	themeName := viper.GetString("theming.theme")
+	theme := ui.ThemeByName(themeName)
+	applyHexOverrides(&theme)
+	if os.Getenv("NO_COLOR") != "" {
+		theme.Monochrome = true
+	}
+
+	refreshStr, _ := cmd.Root().PersistentFlags().GetString("refresh")
+	refreshInterval, err := parseRefreshInterval(refreshStr)
+	if err != nil {
+		return fmt.Errorf("twui: %w", err)
+	}
+
+	model := ui.NewModel(demoFuncs(), theme, refreshInterval)
+	if useASCIISymbols(cmd) {
+		model.SetSymbols(ui.ASCIISymbols())
+	}
+	model.SetChatConfig(loadChatConfig(cmd))
+	model.SetChatFactory(demoChatFactory)
+
+	if _, err := tea.NewProgram(model).Run(); err != nil {
+		return fmt.Errorf("twui: %w", err)
+	}
 	return nil
 }
 

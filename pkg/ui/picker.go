@@ -159,12 +159,13 @@ type Model struct {
 	lastGen  int
 
 	// chat pane
-	chatSessions map[string]*ChatSession // keyed by channel login
-	chatConns    map[string]*chatConn    // live IRC clients keyed by channel login
-	chatOrder    []string                // launch order for C-cycle
-	chatFocus    string                  // channel of the session currently in the pane
-	chatVisible  bool                    // toggled by `c`; set true on first session
-	chatConfig   ChatConfig              // runtime chat behaviour; see SetChatConfig
+	chatSessions map[string]*ChatSession         // keyed by channel login
+	chatConns    map[string]*chatConn            // live IRC clients keyed by channel login
+	chatOrder    []string                        // launch order for C-cycle
+	chatFocus    string                          // channel of the session currently in the pane
+	chatVisible  bool                            // toggled by `c`; set true on first session
+	chatConfig   ChatConfig                      // runtime chat behaviour; see SetChatConfig
+	chatFactory  func(channel string) ChatSource // nil → chat.NewClient; see SetChatFactory
 
 	// theme picker index
 	themeIdx int
@@ -204,6 +205,13 @@ func (m *Model) SetChatConfig(cfg ChatConfig) {
 		cfg.MaxBacklog = defaultChatBacklog
 	}
 	m.chatConfig = cfg
+}
+
+// SetChatFactory installs a custom ChatSource builder for startChat to use
+// instead of the default chat.NewClient. Intended for demo mode and tests.
+// Must be called before tea.Run.
+func (m *Model) SetChatFactory(fn func(channel string) ChatSource) {
+	m.chatFactory = fn
 }
 
 // SetSymbols swaps the glyph set used for status indicators and list markers.

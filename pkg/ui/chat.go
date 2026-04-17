@@ -168,9 +168,17 @@ type chatClosedMsg struct {
 	channel string
 }
 
+// ChatSource is the minimal shape startChat needs from a chat client.
+// *chat.Client satisfies it; demo/test code can provide any implementation
+// that emits *chat.Chat messages and respects ctx cancellation.
+type ChatSource interface {
+	Run(ctx context.Context) error
+	Messages() <-chan *chat.Chat
+}
+
 // chatConn tracks the IRC client plus its cancel/ctx for one channel.
 type chatConn struct {
-	client *chat.Client
+	client ChatSource
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -206,7 +214,12 @@ func (m Model) startChat(channel string) (Model, tea.Cmd, bool) {
 		return m, nil, false
 	}
 
-	client := chat.NewClient(channel)
+	var client ChatSource
+	if m.chatFactory != nil {
+		client = m.chatFactory(channel)
+	} else {
+		client = chat.NewClient(channel)
+	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	go func() {
 		if err := client.Run(ctx); err != nil && ctx.Err() == nil {
