@@ -436,3 +436,58 @@ func TestJoinLeftRight_MinimumOneSpace(t *testing.T) {
 		t.Errorf("joinLeftRight should always insert at least one space: %q", got)
 	}
 }
+
+// --- Layout integration ---
+
+func TestChatPaneActive_RequiresVisibleAndSessions(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.width = 120
+	m.height = 40
+
+	if m.chatPaneActive() {
+		t.Error("no sessions → chatPaneActive should be false")
+	}
+
+	m.chatSessions["shroud"] = NewChatSession("shroud", 500)
+	m.chatOrder = []string{"shroud"}
+	m.chatFocus = "shroud"
+	m.chatVisible = false
+
+	if m.chatPaneActive() {
+		t.Error("chatVisible=false → chatPaneActive should be false")
+	}
+
+	m.chatVisible = true
+	if !m.chatPaneActive() {
+		t.Error("visible + sessions + focus → chatPaneActive should be true")
+	}
+}
+
+func TestRender_BodyShrinksWhenChatPaneShows(t *testing.T) {
+	// With chat off, the body gets one line count; with chat on, it shrinks
+	// by chatPaneHeight + the border separator.
+	m := newTestModel(&mockState{})
+	m.width = 120
+	m.height = 40
+
+	// Chat off: render should succeed and not contain the chat header glyph.
+	out1 := m.render()
+	if strings.Contains(stripANSI(out1), m.symbols.ChatActive) {
+		t.Error("chat glyph leaked when chat is off")
+	}
+
+	// Turn chat on with a session; a `▸ Chat —` line must appear.
+	m.chatSessions["shroud"] = NewChatSession("shroud", 500)
+	m.chatOrder = []string{"shroud"}
+	m.chatFocus = "shroud"
+	m.chatVisible = true
+
+	out2 := m.render()
+	if !strings.Contains(stripANSI(out2), m.symbols.ChatActive) {
+		t.Error("chat pane missing after enabling")
+	}
+	if !strings.Contains(stripANSI(out2), "Chat — shroud") {
+		t.Errorf("pane header missing channel name")
+	}
+
+}

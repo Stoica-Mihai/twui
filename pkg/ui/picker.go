@@ -463,9 +463,18 @@ func (m Model) render() string {
 		return tooSmallView(m.width, m.height)
 	}
 
-	// The outer frame is a 3-row lipgloss table: tab bar, body, footer.
-	// The body itself is plain text lines (channel/category/ignored tables render their own content).
-	bodyHeight := m.height - 6 // top border + tab + separator + separator + footer + bottom border
+	// Outer frame rows: tab bar, body, [chat pane], footer. Each row is
+	// separated by a border line drawn by lipgloss's NormalBorder.
+	chatOn := m.chatPaneActive()
+
+	// Fixed non-body content. 6 accounts for top border + tab + separator +
+	// separator + footer + bottom border; chat adds one more separator and
+	// its fixed height.
+	nonBodyRows := 6
+	if chatOn {
+		nonBodyRows += chatPaneHeight + 1
+	}
+	bodyHeight := m.height - nonBodyRows
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
@@ -486,8 +495,12 @@ func (m Model) render() string {
 		BorderHeader(false).
 		Width(m.width).
 		Row(m.renderTabBar()).
-		Row(bodyStr).
-		Row(m.renderFooter())
+		Row(bodyStr)
+
+	if chatOn {
+		frame = frame.Row(strings.Join(m.renderChatPane(chatPaneHeight), "\n"))
+	}
+	frame = frame.Row(m.renderFooter())
 
 	result := frame.String()
 
@@ -496,6 +509,12 @@ func (m Model) render() string {
 	}
 
 	return result
+}
+
+// chatPaneActive returns true when the chat pane should be drawn as part of
+// the frame: enabled by the user and there is at least one live session.
+func (m Model) chatPaneActive() bool {
+	return m.chatVisible && len(m.chatSessions) > 0 && m.chatFocus != ""
 }
 
 func (m Model) renderFooter() string {
