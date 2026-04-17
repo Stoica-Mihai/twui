@@ -311,7 +311,7 @@ func TestRenderChatHeader_MultipleSessionsShowsIndexAndCycle(t *testing.T) {
 	if !strings.Contains(plain, "1 of 3") {
 		t.Errorf("header missing index: %q", plain)
 	}
-	if !strings.Contains(plain, "C cycle") {
+	if !strings.Contains(plain, "c cycle") {
 		t.Errorf("header missing cycle hint: %q", plain)
 	}
 }
@@ -319,7 +319,7 @@ func TestRenderChatHeader_MultipleSessionsShowsIndexAndCycle(t *testing.T) {
 func TestRenderChatHeader_SingleSessionOmitsCycleHint(t *testing.T) {
 	m := chatModel(t, "shroud")
 	plain := stripANSI(m.renderChatHeader())
-	if strings.Contains(plain, "C cycle") {
+	if strings.Contains(plain, "c cycle") {
 		t.Errorf("single-session header should not advertise cycle: %q", plain)
 	}
 }
@@ -472,16 +472,16 @@ func TestChatKey_ToggleVisibility(t *testing.T) {
 	m.width = 120
 	m.height = 40
 
-	newM, _, ok := m.dispatchBinding("c")
+	newM, _, ok := m.dispatchBinding("C")
 	if !ok {
-		t.Fatal("c should dispatch")
+		t.Fatal("C should dispatch")
 	}
 	if !newM.chatVisible {
-		t.Error("c should flip chatVisible to true")
+		t.Error("C should flip chatVisible to true")
 	}
-	newM2, _, _ := newM.dispatchBinding("c")
+	newM2, _, _ := newM.dispatchBinding("C")
 	if newM2.chatVisible {
-		t.Error("second c should flip back to false")
+		t.Error("second C should flip back to false")
 	}
 }
 
@@ -494,9 +494,9 @@ func TestChatKey_CycleFocus(t *testing.T) {
 	m.chatFocus = "a"
 
 	for _, want := range []string{"b", "c", "a"} {
-		newM, _, ok := m.dispatchBinding("C")
+		newM, _, ok := m.dispatchBinding("c")
 		if !ok {
-			t.Fatal("C should dispatch")
+			t.Fatal("c should dispatch")
 		}
 		if newM.chatFocus != want {
 			t.Errorf("cycle → %q, want %q", newM.chatFocus, want)
@@ -511,7 +511,7 @@ func TestChatKey_CycleFocus_NoopOnSingleSession(t *testing.T) {
 	m.chatOrder = []string{"only"}
 	m.chatFocus = "only"
 
-	newM, _, _ := m.dispatchBinding("C")
+	newM, _, _ := m.dispatchBinding("c")
 	if newM.chatFocus != "only" {
 		t.Errorf("cycle with one session should be a no-op, got %q", newM.chatFocus)
 	}

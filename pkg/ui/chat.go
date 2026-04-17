@@ -352,7 +352,7 @@ func (m Model) renderChatHeader() string {
 	case sess.IsPaused():
 		right = m.styles.favorite.Render("Space resume")
 	case total > 1:
-		right = m.styles.text.Render(fmt.Sprintf("[%d of %d]  C cycle  [ ] scroll", idx, total))
+		right = m.styles.text.Render(fmt.Sprintf("[%d of %d]  c cycle  [ ] scroll", idx, total))
 	default:
 		right = m.styles.text.Render("[ ] scroll")
 	}

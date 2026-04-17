@@ -191,18 +191,20 @@ func (m Model) bindings() []Binding {
 		},
 
 		// --- Chat pane bindings ---
+		// `c` is the frequent action (cycling between live chats); `C`
+		// (with Shift) is the rare one (showing/hiding the pane entirely).
 
 		{
-			Keys: []string{"c"}, Display: "c", Desc: "Toggle chat pane",
+			Keys: []string{"c"}, Display: "c", Desc: "Cycle chat session",
 			Handler: func(m Model) (Model, tea.Cmd) {
-				m.chatVisible = !m.chatVisible
+				m = m.cycleChatFocus()
 				return m, nil
 			},
 		},
 		{
-			Keys: []string{"C"}, Display: "C", Desc: "Cycle chat session",
+			Keys: []string{"C"}, Display: "C", Desc: "Toggle chat pane",
 			Handler: func(m Model) (Model, tea.Cmd) {
-				m = m.cycleChatFocus()
+				m.chatVisible = !m.chatVisible
 				return m, nil
 			},
 		},

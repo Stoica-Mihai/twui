@@ -15,7 +15,7 @@ No Twitch account, no OAuth, no tracking. Built-in ad blocking. Runs mpv or vlc 
 - **Desktop notifications** on stream start / ad break / drop with channel avatars
 - **Auto-refresh** at a configurable interval
 - **ASCII fallback** for terminals without Unicode (`--ascii`, `TERM=linux`)
-- **Live chat pane** per playing stream (anonymous, read-only). Pause on scroll-back, cycle with `C`, hide with `c`
+- **Live chat pane** per playing stream (anonymous, read-only). Pause on scroll-back, cycle with `c`, hide with `C`
 
 ## Install
 
@@ -68,8 +68,8 @@ twui --refresh 1m    # auto-refresh the current view every 60s
 
 | Key | Action |
 |---|---|
-| `c` | Toggle chat pane visibility |
-| `C` | Cycle focus between live sessions |
+| `c` | Cycle focus between live sessions |
+| `C` | Toggle chat pane visibility |
 | `[` / `]` | Scroll chat back / forward one line (back auto-pauses) |
 | `{` / `}` | Scroll chat back / forward one page |
 | Mouse wheel over pane | Scroll (auto-pauses) |
