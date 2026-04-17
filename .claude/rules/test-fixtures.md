@@ -5,9 +5,9 @@ paths:
 
 # Test fixture names
 
-Do not use popular/famous Twitch streamer handles (shroud, xqc, zackrawrr, pokimane, forsen, lirik, insym, trick2g, eslcs, etc.) as test fixtures.
+Do not use real Twitch streamer handles — especially well-known or popular ones — as test fixtures.
 
-**Why:** Hardcoding real people's identities into unit-test scaffolding is distasteful, and popular handles drift (retirement, rename, ban). Keep test data semantically neutral.
+**Why:** Hardcoding identifiable people into unit-test scaffolding is distasteful, and real handles drift (retirement, rename, ban). Keep test data semantically neutral.
 
 **How to apply:**
 - If you need a Twitch-handle-shaped string (e.g. IRC `JOIN #name` parsing, login validation), use `MeNotSanta` — that's the repo owner's handle, safe to reference.
