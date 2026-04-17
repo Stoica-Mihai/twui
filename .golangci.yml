@@ -1,0 +1,41 @@
+# golangci-lint configuration for twui.
+# Pin the set of linters explicitly so upstream defaults don't drift.
+version: "2"
+
+run:
+  timeout: 3m
+
+linters:
+  default: none
+  enable:
+    # Default (kept from prior versions)
+    - errcheck        # unchecked error returns
+    - govet           # stdlib static analysis
+    - ineffassign     # assignments that are never used
+    - staticcheck     # broad static-analysis bundle (includes gosimple, stylecheck)
+    - unused          # unused constants, vars, funcs, types
+
+    # Extras that caught real bugs historically
+    - misspell        # comments / strings
+    - unconvert       # redundant type conversions
+    - bodyclose       # HTTP response.Body not closed
+    - nilerr          # `return nil` when err is non-nil
+    - rowserrcheck    # sql.Rows.Err unchecked
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Tests frequently ignore errors from mock setup on purpose.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
