@@ -115,6 +115,31 @@ func updateKey(m Model, key string) Model {
 
 // --- Message-based tests ---
 
+func TestModel_WatchListResult_SortsLiveFirstByViewers(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+
+	entries := []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "lirik", IsLive: false},
+		{Kind: EntryChannel, Login: "insym", IsLive: true, ViewerCount: 3900},
+		{Kind: EntryChannel, Login: "trick2g", IsLive: false},
+		{Kind: EntryChannel, Login: "ariathome", IsLive: false},
+		{Kind: EntryChannel, Login: "eslcs", IsLive: true, ViewerCount: 65500},
+	}
+	newM, _ := m.Update(watchListResultMsg{entries: entries, err: nil})
+	m2 := newM.(Model)
+
+	wantOrder := []string{"eslcs", "insym", "lirik", "trick2g", "ariathome"}
+	if len(m2.watchList) != len(wantOrder) {
+		t.Fatalf("watchList len = %d, want %d", len(m2.watchList), len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if m2.watchList[i].Login != want {
+			t.Errorf("watchList[%d].Login = %q, want %q", i, m2.watchList[i].Login, want)
+		}
+	}
+}
+
 func TestModel_WatchListResult_PopulatesList(t *testing.T) {
 	state := &mockState{}
 	m := newTestModel(state)

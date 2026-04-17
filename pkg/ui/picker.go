@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -258,7 +259,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err == nil {
 			prev := m.cursorLogin(viewModeWatchList)
-			m.watchList = m.filterIgnored(msg.entries)
+			m.watchList = sortLiveFirst(m.filterIgnored(msg.entries))
 			if msg.refreshed && m.mode == viewModeWatchList {
 				m.cursor = findEntryByLogin(m.watchList, prev)
 			}
@@ -923,6 +924,28 @@ func (m Model) currentListLen() int {
 		return len(m.fns.IgnoreList())
 	}
 	return 0
+}
+
+// sortLiveFirst reorders channel entries so live channels come first, sorted
+// by viewer count descending; offline channels follow in their original order.
+// Non-channel entries (e.g. LoadMore rows) keep their relative position at
+// the tail so they don't get mixed into the live block.
+func sortLiveFirst(entries []DiscoveryEntry) []DiscoveryEntry {
+	out := make([]DiscoveryEntry, len(entries))
+	copy(out, entries)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Kind == EntryChannel && b.Kind == EntryChannel {
+			if a.IsLive != b.IsLive {
+				return a.IsLive
+			}
+			if a.IsLive {
+				return a.ViewerCount > b.ViewerCount
+			}
+		}
+		return false
+	})
+	return out
 }
 
 func (m Model) filterIgnored(entries []DiscoveryEntry) []DiscoveryEntry {
