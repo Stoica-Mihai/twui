@@ -785,4 +785,3 @@ func TestDoGQL_CustomHeaders(t *testing.T) {
 		t.Errorf("X-Api-Header = %q, want %q", gotHeader, "api-value")
 	}
 }
-
