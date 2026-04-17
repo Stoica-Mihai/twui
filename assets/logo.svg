@@ -4,6 +4,6 @@
   <text x="4" y="60" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="58" font-weight="700" fill="#9146FF">&gt;</text>
   <!-- play triangle -->
   <polygon points="50,24 50,60 86,42" fill="#9146FF"/>
-  <!-- wordmark (adapts to GitHub light/dark via currentColor) -->
-  <text x="100" y="60" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="46" font-weight="700" fill="currentColor">twui</text>
+  <!-- wordmark -->
+  <text x="100" y="60" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="46" font-weight="700" fill="#9146FF">twui</text>
 </svg>
