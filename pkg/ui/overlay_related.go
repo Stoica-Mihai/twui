@@ -56,72 +56,59 @@ func (m Model) renderRelatedOverlay() string {
 			}
 			if s.IsFavorite {
 				name = m.symbols.Favorite + " " + name
-			} else {
-				name = "  " + name
 			}
 			rows = append(rows, []string{name, formatViewers(s.ViewerCount)})
 		}
 
 		selIdx := m.overlayCursor
-		// BorderHeader(false) — lipgloss's built-in header rule stops at
-		// the last cell's content instead of spanning the full table width,
-		// leaving a notch at the right edge. We draw our own full-width
-		// rule immediately after the header row, before the data rows.
-		buildTable := func(headerOnly, dataOnly bool) string {
-			b := table.New().
-				Border(lipgloss.NormalBorder()).
-				BorderStyle(m.styles.border).
-				BorderTop(false).
-				BorderBottom(false).
-				BorderLeft(false).
-				BorderRight(false).
-				BorderRow(false).
-				BorderColumn(false).
-				BorderHeader(false).
-				Width(w).
-				Headers("Channel", "Viewers").
-				StyleFunc(func(row, col int) lipgloss.Style {
-					base := lipgloss.NewStyle().Padding(0, 1)
-					if col == 1 {
-						base = base.Align(lipgloss.Right)
-					}
-					switch {
-					case row == table.HeaderRow:
-						return base.Inherit(m.styles.title)
-					case row == selIdx:
-						return base.Inherit(m.styles.selected)
-					case col == 1:
-						return base.Inherit(m.styles.offline)
-					default:
-						return base.Inherit(m.styles.live)
-					}
-				})
-			if !headerOnly {
-				b = b.Rows(rows...)
-			}
-			out := b.String()
-			if headerOnly {
-				// Keep only the first line (the header row).
-				if idx := strings.IndexByte(out, '\n'); idx >= 0 {
-					out = out[:idx]
+		// Build the table ONCE with headers + rows so lipgloss computes a
+		// single set of column widths that both header and data use. We
+		// then slice the output into header and body, and inject our own
+		// full-width rule between them — lipgloss's BorderHeader stops at
+		// the last cell's content and leaves a notch at the right edge.
+		t := table.New().
+			Border(lipgloss.NormalBorder()).
+			BorderStyle(m.styles.border).
+			BorderTop(false).
+			BorderBottom(false).
+			BorderLeft(false).
+			BorderRight(false).
+			BorderRow(false).
+			BorderColumn(false).
+			BorderHeader(false).
+			Width(w).
+			Headers("Channel", "Viewers").
+			StyleFunc(func(row, col int) lipgloss.Style {
+				base := lipgloss.NewStyle().Padding(0, 1)
+				if col == 1 {
+					base = base.Align(lipgloss.Right)
 				}
-			} else if dataOnly {
-				// Drop the first line (the auto-rendered header) so only
-				// data rows come through.
-				if idx := strings.IndexByte(out, '\n'); idx >= 0 {
-					out = out[idx+1:]
+				switch {
+				case row == table.HeaderRow:
+					return base.Inherit(m.styles.title)
+				case row == selIdx:
+					return base.Inherit(m.styles.selected)
+				case col == 1:
+					return base.Inherit(m.styles.offline)
+				default:
+					return base.Inherit(m.styles.live)
 				}
-			}
-			return out
-		}
+			}).
+			Rows(rows...)
 
-		lines = append(lines, m.overlayRow(buildTable(true, false)))
-		lines = append(lines, m.overlayRow(m.styles.border.Render(strings.Repeat("─", w))))
-		for _, tl := range strings.Split(buildTable(false, true), "\n") {
-			if tl == "" {
-				continue
+		tableLines := strings.Split(t.String(), "\n")
+		if len(tableLines) > 0 {
+			// First line is the header row.
+			lines = append(lines, m.overlayRow(tableLines[0]))
+			// Our own full-width rule (lipgloss's BorderHeader stops short).
+			lines = append(lines, m.overlayRow(m.styles.border.Render(strings.Repeat("─", w))))
+			// Remaining lines are data rows.
+			for _, tl := range tableLines[1:] {
+				if tl == "" {
+					continue
+				}
+				lines = append(lines, m.overlayRow(tl))
 			}
-			lines = append(lines, m.overlayRow(tl))
 		}
 
 		if remaining > 0 {
