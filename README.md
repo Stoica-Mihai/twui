@@ -106,5 +106,3 @@ make coverage        # coverage.out + summary
 make lint            # requires golangci-lint installed
 make fmt             # gofmt + goimports
 ```
-
-See [PLAN.md](PLAN.md) for the feature roadmap and architectural decisions.
