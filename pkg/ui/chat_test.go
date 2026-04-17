@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/mcs/twui/pkg/chat"
 )
 
@@ -729,6 +731,89 @@ func TestChatLifecycle_StartChatAutoshows(t *testing.T) {
 	}
 	if _, ok := newM.chatSessions["shroud"]; !ok {
 		t.Error("chatSessions missing shroud entry")
+	}
+}
+
+// --- Mouse wheel ---
+
+// mouseWheel builds a tea.MouseWheelMsg at the given row.
+func mouseWheel(y int, down bool) tea.MouseWheelMsg {
+	btn := tea.MouseWheelUp
+	if down {
+		btn = tea.MouseWheelDown
+	}
+	return tea.MouseWheelMsg{X: 0, Y: y, Button: btn}
+}
+
+func TestMouseWheel_OverChatPaneScrollsChat(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.width = 160
+	m.height = 40
+	s := NewChatSession("c", 100)
+	pushN(s, 30)
+	m.chatSessions["c"] = s
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+	m.chatVisible = true
+
+	// Chat pane occupies Y = m.height - chatPaneHeight - 3 .. m.height - 4.
+	// For m.height=40, chatPaneHeight=10: Y in [27..36].
+	middleY := 30
+
+	// Wheel up inside pane → ScrollBack(1) → pauses at viewBottom=28.
+	newM, _ := m.handleMouseWheel(mouseWheel(middleY, false))
+	m2 := newM.(Model)
+	if !m2.chatSessions["c"].IsPaused() {
+		t.Error("wheel up over pane should pause chat")
+	}
+
+	// Wheel up twice more → viewBottom steps back: 27, 26.
+	newM, _ = newM.(Model).handleMouseWheel(mouseWheel(middleY, false))
+	newM, _ = newM.(Model).handleMouseWheel(mouseWheel(middleY, false))
+	if got := newM.(Model).chatSessions["c"].viewBottom; got != 26 {
+		t.Errorf("viewBottom after 3x wheel-up = %d, want 26", got)
+	}
+
+	// One wheel-down advances toward tail: 27.
+	newM, _ = newM.(Model).handleMouseWheel(mouseWheel(middleY, true))
+	if got := newM.(Model).chatSessions["c"].viewBottom; got != 27 {
+		t.Errorf("viewBottom after wheel-down = %d, want 27", got)
+	}
+}
+
+func TestMouseWheel_OutsideChatPaneMovesCursor(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.width = 160
+	m.height = 40
+	m.chatSessions["c"] = NewChatSession("c", 100)
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+	m.chatVisible = true
+	// Give the picker at least a few list entries so cursor can move.
+	m.watchList = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "a", IsLive: true},
+		{Kind: EntryChannel, Login: "b", IsLive: true},
+	}
+	m.cursor = 0
+
+	// Y=5 is in the body region, not chat pane.
+	newM, _ := m.handleMouseWheel(mouseWheel(5, true))
+	if newM.(Model).cursor != 1 {
+		t.Errorf("cursor after wheel-down over body = %d, want 1", newM.(Model).cursor)
+	}
+}
+
+func TestMouseWheel_ChatNotActiveFallsThrough(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.width = 160
+	m.height = 40
+	m.watchList = []DiscoveryEntry{{Kind: EntryChannel, Login: "a"}, {Kind: EntryChannel, Login: "b"}}
+	m.cursor = 0
+
+	// Chat not active — wheel at any Y moves cursor.
+	newM, _ := m.handleMouseWheel(mouseWheel(30, true))
+	if newM.(Model).cursor != 1 {
+		t.Errorf("cursor = %d, want 1 when chat off", newM.(Model).cursor)
 	}
 }
 

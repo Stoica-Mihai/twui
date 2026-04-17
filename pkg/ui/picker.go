@@ -673,6 +673,21 @@ func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	if m.overlay != overlayNone {
 		return m, nil
 	}
+
+	// Wheel events inside the chat pane scroll the chat (and pause it on
+	// the first back-scroll). Events elsewhere move the picker cursor.
+	if m.chatPaneActive() && m.mouseYInChatPane(msg.Y) {
+		if s := m.currentChatSession(); s != nil {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				s.ScrollBack(1)
+			case tea.MouseWheelDown:
+				s.ScrollForward(1)
+			}
+		}
+		return m, nil
+	}
+
 	switch msg.Button {
 	case tea.MouseWheelUp:
 		m = m.moveCursor(-1)
@@ -680,6 +695,15 @@ func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m = m.moveCursor(1)
 	}
 	return m, nil
+}
+
+// mouseYInChatPane returns true when y falls inside the chat pane rows of
+// the rendered frame. Chat rows span (m.height - chatPaneHeight - 3) through
+// (m.height - 4) inclusive when the pane is visible.
+func (m Model) mouseYInChatPane(y int) bool {
+	top := m.height - chatPaneHeight - 3
+	bottom := m.height - 4
+	return y >= top && y <= bottom
 }
 
 func (m Model) handleEnter() (tea.Model, tea.Cmd) {
