@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
+	"github.com/rivo/uniseg"
 )
 
 // maxRelatedVisible caps how many rows the overlay shows at once. The
@@ -26,9 +27,17 @@ func (m Model) renderRelatedOverlay() string {
 	} else {
 		title = fmt.Sprintf(" Related — %s ", m.overlayChannel)
 	}
+	// Width accommodates both the title and the longest possible hint row
+	// so none of them overhang when wrapped by overlayRow.
 	w := 50
-	if len(title) > w {
-		w = len(title)
+	if tw := uniseg.StringWidth(title); tw > w {
+		w = tw
+	}
+	if len(m.relatedStreams) > maxRelatedVisible {
+		hint := fmt.Sprintf(" · %d more in pool — ignore visible rows to reveal ", len(m.relatedStreams)-maxRelatedVisible)
+		if hw := uniseg.StringWidth(hint); hw > w {
+			w = hw
+		}
 	}
 	lines := m.overlayHeader(title, w)
 	switch {
@@ -112,10 +121,10 @@ func (m Model) renderRelatedOverlay() string {
 		}
 
 		if remaining > 0 {
-			// Trailing space matches the 1-cell right padding the table
-			// cells apply, so the hint row's right edge lines up with the
-			// data rows when wrapped by overlayRow's side border.
-			hint := fmt.Sprintf("  · %d more in pool — ignore visible rows to reveal ", remaining)
+			// One leading space + one trailing space to match the 1-cell
+			// padding the table cells apply. With a 2-digit remaining the
+			// hint fits in 50 cells exactly (relatedPoolSize caps at 30).
+			hint := fmt.Sprintf(" · %d more in pool — ignore visible rows to reveal ", remaining)
 			lines = append(lines, m.overlayRow(m.styles.text.Render(padRight(hint, w))))
 		}
 	}
