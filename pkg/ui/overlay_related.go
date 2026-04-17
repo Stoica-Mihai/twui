@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 )
 
 // maxRelatedVisible caps how many rows the overlay shows at once. The
@@ -45,27 +47,57 @@ func (m Model) renderRelatedOverlay() string {
 			remaining = len(visible) - maxRelatedVisible
 			visible = visible[:maxRelatedVisible]
 		}
-		for i, s := range visible {
+
+		rows := make([][]string, 0, len(visible))
+		for _, s := range visible {
 			name := s.DisplayName
 			if name == "" {
 				name = s.Login
 			}
-			fav := " "
 			if s.IsFavorite {
-				fav = m.symbols.Favorite
-			}
-			row := pad(fmt.Sprintf(" %s %-24s %7s", fav, cellTruncate(name, 24), formatViewers(s.ViewerCount)), w)
-			var styled string
-			if i == m.overlayCursor {
-				styled = m.styles.selected.Render(row)
+				name = m.symbols.Favorite + " " + name
 			} else {
-				styled = m.styles.live.Render(row)
+				name = "  " + name
 			}
-			lines = append(lines, m.overlayRow(styled))
+			rows = append(rows, []string{name, formatViewers(s.ViewerCount)})
 		}
+
+		selIdx := m.overlayCursor
+		pad := lipgloss.NewStyle().Padding(0, 1)
+		t := table.New().
+			Border(lipgloss.NormalBorder()).
+			BorderStyle(m.styles.border).
+			BorderTop(false).
+			BorderBottom(false).
+			BorderLeft(false).
+			BorderRight(false).
+			BorderRow(false).
+			BorderColumn(false).
+			BorderHeader(true).
+			Width(w).
+			Headers("Channel", "Viewers").
+			StyleFunc(func(row, col int) lipgloss.Style {
+				switch {
+				case row == table.HeaderRow:
+					return pad.Inherit(m.styles.title)
+				case row == selIdx:
+					return pad.Inherit(m.styles.selected)
+				case col == 1:
+					return pad.Inherit(m.styles.offline).Align(lipgloss.Right)
+				default:
+					return pad.Inherit(m.styles.live)
+				}
+			}).
+			Rows(rows...)
+
+		// Wrap each rendered table line with the overlay's side borders.
+		for _, tl := range strings.Split(t.String(), "\n") {
+			lines = append(lines, m.overlayRow(tl))
+		}
+
 		if remaining > 0 {
 			hint := fmt.Sprintf("  · %d more in pool — ignore visible rows to reveal", remaining)
-			lines = append(lines, m.overlayRow(m.styles.text.Render(pad(hint, w))))
+			lines = append(lines, m.overlayRow(m.styles.text.Render(padRight(hint, w))))
 		}
 	}
 	lines = append(lines, m.overlayFooter(w))
