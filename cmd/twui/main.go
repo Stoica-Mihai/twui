@@ -76,6 +76,22 @@ func init() {
 	rootCmd.PersistentFlags().Bool("low-latency", false, "Enable Twitch low-latency mode")
 	rootCmd.PersistentFlags().String("refresh", "", "Auto-refresh interval (e.g. 30s, 1m, 2m30s; 0 = off)")
 	rootCmd.PersistentFlags().Bool("ascii", false, "Use ASCII-only glyphs (auto-enabled for TERM=linux or TWUI_ASCII)")
+	rootCmd.PersistentFlags().Bool("chat", true, "Show the live chat pane when a stream is playing")
+}
+
+// loadChatConfig builds a ui.ChatConfig from the --chat flag and the [chat]
+// TOML section. Defaults: enabled=true, max-backlog=500.
+func loadChatConfig(cmd *cobra.Command) ui.ChatConfig {
+	cfg := ui.DefaultChatConfig()
+	if v, err := cmd.Root().PersistentFlags().GetBool("chat"); err == nil {
+		cfg.Enabled = v
+	}
+	if viper.IsSet("chat.max-backlog") {
+		if n := viper.GetInt("chat.max-backlog"); n > 0 {
+			cfg.MaxBacklog = n
+		}
+	}
+	return cfg
 }
 
 // useASCIISymbols reports whether the TUI should render ASCII-only glyphs.
@@ -128,6 +144,7 @@ func initConfig(cmd *cobra.Command) error {
 	bindFlag("player", "general.player")
 	bindFlag("low-latency", "twitch.low-latency")
 	bindFlag("refresh", "general.refresh")
+	bindFlag("chat", "chat.enabled")
 
 	return nil
 }
@@ -467,6 +484,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	if useASCIISymbols(cmd) {
 		model.SetSymbols(ui.ASCIISymbols())
 	}
+	model.SetChatConfig(loadChatConfig(cmd))
 	p := tea.NewProgram(model)
 
 	if _, err := p.Run(); err != nil {

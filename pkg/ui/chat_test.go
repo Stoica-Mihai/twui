@@ -708,6 +708,40 @@ func TestChatLifecycle_ClosedLastSessionHidesPane(t *testing.T) {
 	}
 }
 
+func TestChatConfig_DisabledShortCircuitsStartChat(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatConfig = ChatConfig{Enabled: false, MaxBacklog: 500}
+	_, cmd, ok := m.startChat("c")
+	if ok {
+		t.Error("startChat should return ok=false when chat is disabled")
+	}
+	if cmd != nil {
+		t.Error("startChat should return nil Cmd when disabled")
+	}
+	if _, exists := m.chatSessions["c"]; exists {
+		t.Error("no ChatSession should be created when chat is disabled")
+	}
+}
+
+func TestChatConfig_SetterClampsMaxBacklog(t *testing.T) {
+	m := NewModel(mockFns(&mockState{}), DefaultTheme(), 0)
+	m.SetChatConfig(ChatConfig{Enabled: true, MaxBacklog: 0})
+	if m.chatConfig.MaxBacklog != defaultChatBacklog {
+		t.Errorf("zero backlog should clamp to default (%d), got %d",
+			defaultChatBacklog, m.chatConfig.MaxBacklog)
+	}
+}
+
+func TestChatConfig_DefaultEnablesChat(t *testing.T) {
+	m := NewModel(mockFns(&mockState{}), DefaultTheme(), 0)
+	if !m.chatConfig.Enabled {
+		t.Error("default chatConfig should have Enabled=true")
+	}
+	if m.chatConfig.MaxBacklog != defaultChatBacklog {
+		t.Errorf("default backlog = %d, want %d", m.chatConfig.MaxBacklog, defaultChatBacklog)
+	}
+}
+
 func TestChatLifecycle_StartChatAutoshows(t *testing.T) {
 	m := newTestModel(&mockState{})
 	m.chatVisible = false

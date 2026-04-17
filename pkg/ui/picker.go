@@ -162,6 +162,7 @@ type Model struct {
 	chatOrder    []string                // launch order for C-cycle
 	chatFocus    string                  // channel of the session currently in the pane
 	chatVisible  bool                    // toggled by `c`; set true on first session
+	chatConfig   ChatConfig              // runtime chat behaviour; see SetChatConfig
 
 	// theme picker index
 	themeIdx int
@@ -185,11 +186,22 @@ func NewModel(fns DiscoveryFuncs, theme Theme, refreshInterval time.Duration) *M
 		sessions:         make(map[string]*playbackSession),
 		chatSessions:     make(map[string]*ChatSession),
 		chatConns:        make(map[string]*chatConn),
+		chatConfig:       DefaultChatConfig(),
 		ctx:              ctx,
 		cancel:           cancel,
 		refreshInterval:  refreshInterval,
 		refreshCountdown: refreshInterval,
 	}
+}
+
+// SetChatConfig overrides the chat behaviour. Intended to be called once
+// after NewModel before tea.Run — not safe to call concurrently with the
+// event loop.
+func (m *Model) SetChatConfig(cfg ChatConfig) {
+	if cfg.MaxBacklog <= 0 {
+		cfg.MaxBacklog = defaultChatBacklog
+	}
+	m.chatConfig = cfg
 }
 
 // SetSymbols swaps the glyph set used for status indicators and list markers.

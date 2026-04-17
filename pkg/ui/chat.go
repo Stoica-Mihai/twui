@@ -20,6 +20,23 @@ import (
 // minutes of scrollback.
 const defaultChatBacklog = 500
 
+// ChatConfig is the runtime-configurable chat behaviour — set by main from
+// the [chat] TOML section or the --chat CLI flag via (*Model).SetChatConfig.
+type ChatConfig struct {
+	// Enabled controls whether IRC connections are opened at all. When
+	// false, launched streams skip chat setup entirely.
+	Enabled bool
+	// MaxBacklog is the per-session message buffer cap. <=0 uses the
+	// package default (500).
+	MaxBacklog int
+}
+
+// DefaultChatConfig returns a ChatConfig with chat enabled and the default
+// backlog size. Used by NewModel so zero-configured Models behave sensibly.
+func DefaultChatConfig() ChatConfig {
+	return ChatConfig{Enabled: true, MaxBacklog: defaultChatBacklog}
+}
+
 // ChatSession owns the chat state for one active stream: a bounded message
 // buffer plus scroll/pause state. All methods are single-goroutine — the
 // Bubble Tea event loop is the only caller.
@@ -169,11 +186,15 @@ func waitChatMsg(msgs <-chan *chat.Chat, channel string, ctx context.Context) te
 }
 
 // startChat ensures a ChatSession + IRC client are running for the given
-// channel. If one is already running, returns (m, nil, false). Otherwise
-// creates the session, starts the client goroutine, and returns a Cmd that
-// reads the first message. The Model returned reflects any state mutations
-// (chatOrder append, focus assignment, chatVisible flip).
+// channel. If one is already running or chat is disabled in config, returns
+// (m, nil, false). Otherwise creates the session, starts the client
+// goroutine, and returns a Cmd that reads the first message. The Model
+// returned reflects any state mutations (chatOrder append, focus
+// assignment, chatVisible flip).
 func (m Model) startChat(channel string) (Model, tea.Cmd, bool) {
+	if !m.chatConfig.Enabled {
+		return m, nil, false
+	}
 	if _, running := m.chatConns[channel]; running {
 		return m, nil, false
 	}
@@ -192,7 +213,7 @@ func (m Model) startChat(channel string) (Model, tea.Cmd, bool) {
 	m.chatConns[channel] = &chatConn{client: client, ctx: ctx, cancel: cancel}
 
 	if _, exists := m.chatSessions[channel]; !exists {
-		m.chatSessions[channel] = NewChatSession(channel, defaultChatBacklog)
+		m.chatSessions[channel] = NewChatSession(channel, m.chatConfig.MaxBacklog)
 		m.chatOrder = append(m.chatOrder, channel)
 	}
 	if m.chatFocus == "" {
