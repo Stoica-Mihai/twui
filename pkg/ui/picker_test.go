@@ -850,6 +850,66 @@ func TestModel_RelatedOverlay_XIgnoresAndRemovesRow(t *testing.T) {
 	}
 }
 
+func TestModel_RelatedOverlay_IgnoreBackfillsFromPool(t *testing.T) {
+	// Pool deeper than the visible window: ignoring a visible row should
+	// reveal the next pool entry in its place (slice shrinkage + rerender).
+	state := &mockState{}
+	m := newTestModel(state)
+	m.width = 160
+	m.height = 40
+	m.overlay = overlayRelated
+	m.overlayChannel = "target"
+	m.overlayCategory = "Valorant"
+	m.relatedStreams = make([]DiscoveryEntry, maxRelatedVisible+5)
+	for i := range m.relatedStreams {
+		m.relatedStreams[i] = DiscoveryEntry{
+			Kind: EntryChannel, IsLive: true,
+			Login: fmt.Sprintf("peer_%02d", i),
+		}
+	}
+	m.overlayCursor = 0
+
+	before := m.renderRelatedOverlay()
+	if !strings.Contains(stripANSI(before), "peer_00") {
+		t.Fatalf("first row should contain peer_00: %q", stripANSI(before))
+	}
+
+	// Ignore peer_00 — the row should be gone; peer_01 slides up; peer_15
+	// (previously hidden in pool) becomes visible at the tail.
+	m = updateKey(m, "x")
+
+	after := stripANSI(m.renderRelatedOverlay())
+	if strings.Contains(after, "peer_00") {
+		t.Errorf("after ignore, peer_00 should be gone:\n%s", after)
+	}
+	if !strings.Contains(after, "peer_15") {
+		t.Errorf("after ignore, peer_15 should slide into the visible window:\n%s", after)
+	}
+	if len(m.relatedStreams) != maxRelatedVisible+4 {
+		t.Errorf("relatedStreams len = %d, want %d", len(m.relatedStreams), maxRelatedVisible+4)
+	}
+}
+
+func TestModel_RelatedOverlay_CursorClampsToVisibleWindow(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.overlay = overlayRelated
+	m.relatedStreams = make([]DiscoveryEntry, maxRelatedVisible+5)
+	for i := range m.relatedStreams {
+		m.relatedStreams[i] = DiscoveryEntry{
+			Kind: EntryChannel, IsLive: true,
+			Login: fmt.Sprintf("peer_%02d", i),
+		}
+	}
+	m.overlayCursor = maxRelatedVisible - 1 // last visible row
+
+	// Pressing j should NOT advance past the last visible row.
+	m = updateKey(m, "j")
+	if m.overlayCursor != maxRelatedVisible-1 {
+		t.Errorf("cursor at last visible should clamp, got %d", m.overlayCursor)
+	}
+}
+
 func TestModel_RelatedOverlay_XOnLastRowClampsCursor(t *testing.T) {
 	state := &mockState{}
 	m := newTestModel(state)

@@ -8,6 +8,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// maxRelatedVisible caps how many rows the overlay shows at once. The
+// underlying pool (m.relatedStreams) can hold more so that ignoring rows
+// slides new candidates into view without a refetch. When the pool is
+// larger than this cap, a small "· N more" hint sits in the empty row.
+const maxRelatedVisible = 15
+
 // renderRelatedOverlay shows other live streams in the same category as the
 // channel under the cursor — a pragmatic replacement for Twitch's removed
 // Host feature. One row is highlighted (m.overlayCursor); Enter launches it.
@@ -33,7 +39,13 @@ func (m Model) renderRelatedOverlay() string {
 		}
 		lines = append(lines, m.overlayRow(m.styles.text.Render(pad(msg, w))))
 	default:
-		for i, s := range m.relatedStreams {
+		visible := m.relatedStreams
+		remaining := 0
+		if len(visible) > maxRelatedVisible {
+			remaining = len(visible) - maxRelatedVisible
+			visible = visible[:maxRelatedVisible]
+		}
+		for i, s := range visible {
 			name := s.DisplayName
 			if name == "" {
 				name = s.Login
@@ -50,6 +62,10 @@ func (m Model) renderRelatedOverlay() string {
 				styled = m.styles.live.Render(row)
 			}
 			lines = append(lines, m.overlayRow(styled))
+		}
+		if remaining > 0 {
+			hint := fmt.Sprintf("  · %d more in pool — ignore visible rows to reveal", remaining)
+			lines = append(lines, m.overlayRow(m.styles.text.Render(pad(hint, w))))
 		}
 	}
 	lines = append(lines, m.overlayFooter(w))
@@ -92,7 +108,13 @@ func (m Model) handleRelatedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc", "r", "q", "Q":
 		m.overlay = overlayNone
 	case "j", "down":
-		if m.overlayCursor < len(m.relatedStreams)-1 {
+		// Cursor stays within the visible window even when the pool is
+		// deeper — rows beyond maxRelatedVisible aren't rendered.
+		limit := len(m.relatedStreams) - 1
+		if limit > maxRelatedVisible-1 {
+			limit = maxRelatedVisible - 1
+		}
+		if m.overlayCursor < limit {
 			m.overlayCursor++
 		}
 	case "k", "up":

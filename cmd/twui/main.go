@@ -41,9 +41,17 @@ var (
 	verbose bool
 )
 
-// maxRelatedStreams caps how many other-same-category entries the `r`
-// overlay fetches and displays.
-const maxRelatedStreams = 10
+const (
+	// relatedPoolSize is how many filtered entries we return to the UI so
+	// it has headroom to drop rows when the user ignores them and still
+	// keep the visible window populated without refetching.
+	relatedPoolSize = 30
+	// relatedFetchLimit is what we ask the API for. Much larger than the
+	// pool size on purpose: after dropping the subject channel and any
+	// ignored logins we still want the full pool populated. 100 is the
+	// Twitch API maximum for this endpoint.
+	relatedFetchLimit = 100
+)
 
 // Injected at release time by goreleaser via -ldflags. Defaults describe an
 // unreleased dev build; see .goreleaser.yaml.
@@ -460,13 +468,14 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		RelatedChannels: func(c context.Context, channel, category string) ([]ui.DiscoveryEntry, error) {
 			// Twitch removed the Host feature in Oct 2022, so "related" now
 			// means other live channels in the same category. Fetch the
-			// category's top streams, drop the subject channel and anyone
-			// on the ignore list, cap at maxRelatedStreams.
-			streams, _, err := api.CategoryStreams(c, category, maxRelatedStreams, "")
+			// API maximum so we have headroom to drop the subject channel
+			// and anyone already ignored and still have ~maxRelatedStreams
+			// rows left to display.
+			streams, _, err := api.CategoryStreams(c, category, relatedFetchLimit, "")
 			if err != nil {
 				return nil, err
 			}
-			entries := make([]ui.DiscoveryEntry, 0, len(streams))
+			entries := make([]ui.DiscoveryEntry, 0, relatedPoolSize)
 			for _, s := range streams {
 				if strings.EqualFold(s.Login, channel) {
 					continue
@@ -486,7 +495,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					IsFavorite:  favSet[s.Login],
 					IsLive:      true,
 				})
-				if len(entries) >= maxRelatedStreams {
+				if len(entries) >= relatedPoolSize {
 					break
 				}
 			}
