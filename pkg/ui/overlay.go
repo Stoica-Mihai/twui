@@ -24,6 +24,17 @@ func (m Model) renderOverlay() string {
 
 // --- Shared overlay chrome ---
 
+// overlayWidth returns max(display width of title, min), measuring title's
+// visible width after stripping ANSI so styled or non-ASCII titles don't
+// desync the box frame.
+func overlayWidth(title string, min int) int {
+	w := uniseg.StringWidth(stripANSI(title))
+	if w < min {
+		return min
+	}
+	return w
+}
+
 // overlayHeader returns the top three rows of an overlay box: top border,
 // titled row, and the separator between title and body.
 func (m Model) overlayHeader(title string, w int) []string {

@@ -318,8 +318,6 @@ func TestStreamMetadata_NotFound(t *testing.T) {
 	}
 }
 
-// --- parseGQLRetryAfter tests ---
-
 // --- parseRFC3339 tests ---
 
 func TestParseRFC3339_EmptyString(t *testing.T) {
@@ -788,25 +786,3 @@ func TestDoGQL_CustomHeaders(t *testing.T) {
 	}
 }
 
-// --- parseGQLRetryAfter tests ---
-
-func TestParseGQLRetryAfter(t *testing.T) {
-	cases := []struct {
-		header string
-		want   time.Duration
-	}{
-		{"", 0},
-		{"0", 0},
-		{"invalid", 0},
-		{"5", 5 * time.Second},
-		{"30", 30 * time.Second},
-		// Over the 30-second cap
-		{"999", 30 * time.Second},
-	}
-	for _, c := range cases {
-		got := parseGQLRetryAfter(c.header)
-		if got != c.want {
-			t.Errorf("parseGQLRetryAfter(%q) = %v, want %v", c.header, got, c.want)
-		}
-	}
-}

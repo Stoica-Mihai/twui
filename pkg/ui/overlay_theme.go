@@ -8,8 +8,8 @@ import (
 )
 
 func (m Model) renderThemeOverlay() string {
-	w := 30
 	title := " Theme Picker "
+	w := overlayWidth(title, 30)
 	lines := m.overlayHeader(title, w)
 	for i, p := range Presets {
 		row := fmt.Sprintf("  %-*s  ", w-4, p.Name)

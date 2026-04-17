@@ -9,11 +9,10 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/mcs/twui/pkg/session"
 	"github.com/mcs/twui/pkg/stream"
 )
 
@@ -25,29 +24,14 @@ const (
 	segmentRetryBaseDelay  = 1 * time.Second
 	maxKeyCacheSize        = 32
 	maxSegmentSize         = 100 * 1024 * 1024 // 100 MB
-	maxRetryAfter          = 30 * time.Second
 )
 
-// parseRetryAfter parses a Retry-After header value as integer seconds.
-// Returns 0 for empty, negative, zero, or non-integer values.
-func parseRetryAfter(header string) time.Duration {
-	s := strings.TrimSpace(header)
-	if s == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		return 0
-	}
-	return time.Duration(n) * time.Second
-}
-
 // retryDelay computes the delay before the next retry attempt. If retryAfterHeader
-// parses to a positive duration, uses min(parsed, 30s). Otherwise uses full jitter:
-// rand(0, baseDelay * 2^attempt).
+// parses to a positive duration, uses that (capped by session.MaxRetryAfter).
+// Otherwise uses full jitter: rand(0, baseDelay * 2^attempt).
 func retryDelay(attempt int, baseDelay time.Duration, retryAfterHeader string) time.Duration {
-	if ra := parseRetryAfter(retryAfterHeader); ra > 0 {
-		return min(ra, maxRetryAfter)
+	if ra := session.ParseRetryAfter(retryAfterHeader); ra > 0 {
+		return ra
 	}
 	return time.Duration(rand.Int64N(int64(baseDelay) * (1 << uint(attempt))))
 }

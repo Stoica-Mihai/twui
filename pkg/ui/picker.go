@@ -224,6 +224,18 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// finishAsync clears the loading or refreshing flag for a completed async op.
+// Refresh errors are intentionally swallowed so background failures don't blank
+// the UI mid-view; only initial-load errors are surfaced via m.err.
+func (m *Model) finishAsync(refreshed bool, err error) {
+	if refreshed {
+		m.refreshing = false
+		return
+	}
+	m.loading = false
+	m.err = err
+}
+
 // Init implements tea.Model (bubbletea v2: returns tea.Cmd).
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.loadWatchList(), titleScrollCmd()}
@@ -251,12 +263,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouseWheel(msg)
 
 	case watchListResultMsg:
-		if msg.refreshed {
-			m.refreshing = false
-		} else {
-			m.loading = false
-			m.err = msg.err
-		}
+		m.finishAsync(msg.refreshed, msg.err)
 		if msg.err == nil {
 			prev := m.cursorLogin(viewModeWatchList)
 			m.watchList = sortLiveFirst(m.filterIgnored(msg.entries))
@@ -270,12 +277,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.query != m.searchQuery {
 			return m, nil
 		}
-		if msg.refreshed {
-			m.refreshing = false
-		} else {
-			m.loading = false
-			m.err = msg.err
-		}
+		m.finishAsync(msg.refreshed, msg.err)
 		if msg.err == nil {
 			prev := m.cursorLogin(viewModeSearch)
 			m.searchList = m.filterIgnored(msg.entries)
@@ -288,12 +290,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case browseResultMsg:
-		if msg.refreshed {
-			m.refreshing = false
-		} else {
-			m.loading = false
-			m.err = msg.err
-		}
+		m.finishAsync(msg.refreshed, msg.err)
 		if msg.err == nil {
 			prevCat := m.cursorCategory()
 			m.browseList = msg.entries
@@ -309,12 +306,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case categoryStreamsResultMsg:
-		if msg.refresh {
-			m.refreshing = false
-		} else {
-			m.loading = false
-		}
 		if msg.appendMode {
+			// Append failures surface as a notice (not a blocking error),
+			// so we only clear the async flag — m.err is left untouched.
+			if msg.refresh {
+				m.refreshing = false
+			} else {
+				m.loading = false
+			}
 			if n := len(m.categoryList); n > 0 && m.categoryList[n-1].Kind == EntryLoadMore {
 				m.categoryList = m.categoryList[:n-1]
 			}
@@ -325,9 +324,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.categoryCursor = msg.nextCursor
 			}
 		} else {
-			if !msg.refresh {
-				m.err = msg.err
-			}
+			m.finishAsync(msg.refresh, msg.err)
 			if msg.err == nil {
 				prev := m.cursorLogin(viewModeBrowse)
 				m.categoryList = m.filterIgnored(msg.entries)
@@ -589,13 +586,7 @@ func (m Model) renderFooter() string {
 	}
 	right := strings.Join(parts, dot) + "  "
 
-	// Pad between left and right.
-	leftW := uniseg.StringWidth(stripANSI(left))
-	rightW := uniseg.StringWidth(stripANSI(right))
-	if gap := m.width - 2 - leftW - rightW; gap > 0 {
-		return left + strings.Repeat(" ", gap) + right
-	}
-	return left + "  " + right
+	return joinLeftRight(left, right, m.width-2)
 }
 
 // countLiveOffline counts live and offline channel entries in the current view.

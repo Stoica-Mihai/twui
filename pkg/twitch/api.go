@@ -12,10 +12,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mcs/twui/pkg/session"
 )
 
 const (
@@ -24,7 +25,6 @@ const (
 	IntegrityEndpoint = "https://passport.twitch.tv/integrity"
 	DefaultUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
 
-	maxGQLRetryAfter      = 30 * time.Second
 	integrityExpiryBuffer = time.Minute // refresh before this much time remains
 )
 
@@ -435,7 +435,7 @@ func (a *TwitchAPI) doGQLRoundTrip(ctx context.Context, bodyBytes []byte, extraH
 	slog.Debug("GQL response", "operation", operationName, "status", resp.StatusCode)
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		retryAfter := parseGQLRetryAfter(resp.Header.Get("Retry-After"))
+		retryAfter := session.ParseRetryAfter(resp.Header.Get("Retry-After"))
 		return nil, &RateLimitedError{RetryAfter: retryAfter}
 	}
 
@@ -489,14 +489,3 @@ func parseRFC3339(s string) time.Time {
 	return t
 }
 
-func parseGQLRetryAfter(header string) time.Duration {
-	s, err := strconv.Atoi(strings.TrimSpace(header))
-	if err != nil || s <= 0 {
-		return 0
-	}
-	d := time.Duration(s) * time.Second
-	if d > maxGQLRetryAfter {
-		d = maxGQLRetryAfter
-	}
-	return d
-}

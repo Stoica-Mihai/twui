@@ -10,8 +10,9 @@ import (
 // Display or Desc are skipped so a parent binding can group siblings under a
 // single row (e.g. "j / k / ↑ / ↓").
 func (m Model) renderHelpOverlay() string {
-	w := 50
-	lines := m.overlayHeader(" Keyboard Shortcuts", w)
+	title := " Keyboard Shortcuts"
+	w := overlayWidth(title, 50)
+	lines := m.overlayHeader(title, w)
 	for _, b := range m.bindings() {
 		if b.Display == "" || b.Desc == "" {
 			continue

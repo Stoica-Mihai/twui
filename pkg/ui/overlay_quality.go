@@ -10,7 +10,7 @@ import (
 
 func (m Model) renderQualityOverlay() string {
 	title := fmt.Sprintf(" Quality — %s ", m.overlayChannel)
-	w := len(title)
+	w := overlayWidth(title, 0)
 	lines := m.overlayHeader(title, w)
 	for i, q := range m.overlayList {
 		row := fmt.Sprintf("  %-*s  ", w-4, q)
