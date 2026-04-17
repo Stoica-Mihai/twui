@@ -189,6 +189,68 @@ func (m Model) bindings() []Binding {
 				return m, tea.Quit
 			},
 		},
+
+		// --- Chat pane bindings ---
+
+		{
+			Keys: []string{"c"}, Display: "c", Desc: "Toggle chat pane",
+			Handler: func(m Model) (Model, tea.Cmd) {
+				m.chatVisible = !m.chatVisible
+				return m, nil
+			},
+		},
+		{
+			Keys: []string{"C"}, Display: "C", Desc: "Cycle chat session",
+			Handler: func(m Model) (Model, tea.Cmd) {
+				m = m.cycleChatFocus()
+				return m, nil
+			},
+		},
+		{
+			Keys: []string{"space", " "}, Display: "Space", Desc: "Resume chat scroll",
+			Handler: func(m Model) (Model, tea.Cmd) {
+				if s := m.currentChatSession(); s != nil {
+					s.Resume()
+				}
+				return m, nil
+			},
+		},
+		{
+			Keys: []string{"["}, Display: "[ / ]", Desc: "Chat scroll back / forward (line)",
+			Handler: func(m Model) (Model, tea.Cmd) {
+				if s := m.currentChatSession(); s != nil {
+					s.ScrollBack(1)
+				}
+				return m, nil
+			},
+		},
+		{
+			Keys: []string{"]"}, Display: "", Desc: "",
+			Handler: func(m Model) (Model, tea.Cmd) {
+				if s := m.currentChatSession(); s != nil {
+					s.ScrollForward(1)
+				}
+				return m, nil
+			},
+		},
+		{
+			Keys: []string{"{"}, Display: "{ / }", Desc: "Chat scroll back / forward (page)",
+			Handler: func(m Model) (Model, tea.Cmd) {
+				if s := m.currentChatSession(); s != nil {
+					s.ScrollBack(chatPaneHeight - 1)
+				}
+				return m, nil
+			},
+		},
+		{
+			Keys: []string{"}"}, Display: "", Desc: "",
+			Handler: func(m Model) (Model, tea.Cmd) {
+				if s := m.currentChatSession(); s != nil {
+					s.ScrollForward(chatPaneHeight - 1)
+				}
+				return m, nil
+			},
+		},
 	}
 }
 

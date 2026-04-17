@@ -123,6 +123,38 @@ func (s *ChatSession) NewSincePause() int { return s.newSincePause }
 // Len returns the current size of the message buffer (for tests / metrics).
 func (s *ChatSession) Len() int { return len(s.buffer) }
 
+// --- Model helpers for chat keymap dispatch ---
+
+// currentChatSession returns the ChatSession the pane is currently showing,
+// or nil if no sessions are live or no focus is set.
+func (m Model) currentChatSession() *ChatSession {
+	if m.chatFocus == "" {
+		return nil
+	}
+	return m.chatSessions[m.chatFocus]
+}
+
+// cycleChatFocus advances m.chatFocus to the next channel in m.chatOrder,
+// wrapping. No-op when there are fewer than two live sessions.
+func (m Model) cycleChatFocus() Model {
+	if len(m.chatOrder) < 2 {
+		return m
+	}
+	idx := -1
+	for i, ch := range m.chatOrder {
+		if ch == m.chatFocus {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		m.chatFocus = m.chatOrder[0]
+		return m
+	}
+	m.chatFocus = m.chatOrder[(idx+1)%len(m.chatOrder)]
+	return m
+}
+
 // chatPaneHeight is the fixed number of lines the bottom chat pane occupies
 // when visible, including its 1-line header.
 const chatPaneHeight = 10

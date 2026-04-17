@@ -614,6 +614,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleSearchInput(msg)
 	}
 
+	// Esc hides the chat pane whenever it's visible, before the normal Esc
+	// handler (which walks out of category stacks etc.) gets a chance.
+	if msg.String() == "esc" && m.chatVisible {
+		m.chatVisible = false
+		if s := m.currentChatSession(); s != nil {
+			s.Resume()
+		}
+		return m, nil
+	}
+
 	if newM, cmd, ok := m.dispatchBinding(msg.String()); ok {
 		return newM, cmd
 	}

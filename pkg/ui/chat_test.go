@@ -463,6 +463,172 @@ func TestChatPaneActive_RequiresVisibleAndSessions(t *testing.T) {
 	}
 }
 
+// --- Keymap integration ---
+
+func TestChatKey_ToggleVisibility(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.width = 120
+	m.height = 40
+
+	newM, _, ok := m.dispatchBinding("c")
+	if !ok {
+		t.Fatal("c should dispatch")
+	}
+	if !newM.chatVisible {
+		t.Error("c should flip chatVisible to true")
+	}
+	newM2, _, _ := newM.dispatchBinding("c")
+	if newM2.chatVisible {
+		t.Error("second c should flip back to false")
+	}
+}
+
+func TestChatKey_CycleFocus(t *testing.T) {
+	m := newTestModel(&mockState{})
+	for _, ch := range []string{"a", "b", "c"} {
+		m.chatSessions[ch] = NewChatSession(ch, 100)
+		m.chatOrder = append(m.chatOrder, ch)
+	}
+	m.chatFocus = "a"
+
+	for _, want := range []string{"b", "c", "a"} {
+		newM, _, ok := m.dispatchBinding("C")
+		if !ok {
+			t.Fatal("C should dispatch")
+		}
+		if newM.chatFocus != want {
+			t.Errorf("cycle → %q, want %q", newM.chatFocus, want)
+		}
+		m = newM
+	}
+}
+
+func TestChatKey_CycleFocus_NoopOnSingleSession(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatSessions["only"] = NewChatSession("only", 100)
+	m.chatOrder = []string{"only"}
+	m.chatFocus = "only"
+
+	newM, _, _ := m.dispatchBinding("C")
+	if newM.chatFocus != "only" {
+		t.Errorf("cycle with one session should be a no-op, got %q", newM.chatFocus)
+	}
+}
+
+func TestChatKey_SpaceResumes(t *testing.T) {
+	m := newTestModel(&mockState{})
+	s := NewChatSession("c", 100)
+	pushN(s, 10)
+	s.ScrollBack(3)
+	m.chatSessions["c"] = s
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+
+	if !s.IsPaused() {
+		t.Fatal("setup: session should be paused")
+	}
+	_, _, ok := m.dispatchBinding("space")
+	if !ok {
+		t.Fatal("space should dispatch")
+	}
+	if s.IsPaused() {
+		t.Error("space should resume the session")
+	}
+}
+
+func TestChatKey_BracketScrolls(t *testing.T) {
+	m := newTestModel(&mockState{})
+	s := NewChatSession("c", 100)
+	pushN(s, 10)
+	m.chatSessions["c"] = s
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+
+	// [ scrolls back → pauses
+	m.dispatchBinding("[")
+	if !s.IsPaused() {
+		t.Error("[ should cause pause via ScrollBack")
+	}
+
+	// ] scrolls forward
+	startBottom := 9 - 1 // after [ pushes ScrollBack(1), viewBottom was len-1-1 = 8
+	if s.viewBottom != startBottom {
+		t.Errorf("viewBottom after [ = %d, want %d", s.viewBottom, startBottom)
+	}
+
+	m.dispatchBinding("]")
+	// Back to bottom → auto-resume
+	if s.IsPaused() {
+		t.Error("] should auto-resume when it hits the tail")
+	}
+}
+
+func TestChatKey_BraceScrollsPage(t *testing.T) {
+	m := newTestModel(&mockState{})
+	s := NewChatSession("c", 200)
+	pushN(s, 50)
+	m.chatSessions["c"] = s
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+
+	m.dispatchBinding("{") // page back
+	if !s.IsPaused() {
+		t.Error("{ should cause pause")
+	}
+	// Expect viewBottom = tail - (chatPaneHeight - 1)
+	want := s.Len() - 1 - (chatPaneHeight - 1)
+	if s.viewBottom != want {
+		t.Errorf("viewBottom after { = %d, want %d", s.viewBottom, want)
+	}
+}
+
+func TestChatKey_EscHidesPane(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatVisible = true
+	m.chatSessions["c"] = NewChatSession("c", 100)
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+
+	newM, _ := m.handleKey(pressKey("esc"))
+	m2 := newM.(Model)
+	if m2.chatVisible {
+		t.Error("Esc should hide pane when chat is visible")
+	}
+}
+
+func TestChatKey_EscResumesBeforeHiding(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatVisible = true
+	s := NewChatSession("c", 100)
+	pushN(s, 10)
+	s.ScrollBack(3)
+	m.chatSessions["c"] = s
+	m.chatOrder = []string{"c"}
+	m.chatFocus = "c"
+
+	if !s.IsPaused() {
+		t.Fatal("setup: should be paused")
+	}
+	m.handleKey(pressKey("esc"))
+	if s.IsPaused() {
+		t.Error("Esc should also clear paused state")
+	}
+}
+
+func TestChatKey_EscFallsThroughWhenPaneHidden(t *testing.T) {
+	// Esc with chatVisible=false should NOT run the chat-hide logic; it
+	// falls through to the existing Esc handler. Since we don't have a
+	// search/category stack set up, this just no-ops — we assert state
+	// didn't change instead of asserting a specific side effect.
+	m := newTestModel(&mockState{})
+	m.chatVisible = false
+	before := m.chatVisible
+	m.handleKey(pressKey("esc"))
+	if m.chatVisible != before {
+		t.Errorf("chatVisible flipped unexpectedly")
+	}
+}
+
 func TestRender_BodyShrinksWhenChatPaneShows(t *testing.T) {
 	// With chat off, the body gets one line count; with chat on, it shrinks
 	// by chatPaneHeight + the border separator.
