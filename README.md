@@ -6,6 +6,7 @@
 [![CI](https://github.com/Stoica-Mihai/twui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Stoica-Mihai/twui/actions/workflows/ci.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/Stoica-Mihai/twui)](go.mod)
 [![Downloads](https://img.shields.io/github/downloads/Stoica-Mihai/twui/total)](https://github.com/Stoica-Mihai/twui/releases)
+[![License](https://img.shields.io/github/license/Stoica-Mihai/twui)](LICENSE)
 
 Anonymous Twitch TUI for browsing and watching live streams.
 
