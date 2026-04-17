@@ -1183,10 +1183,15 @@ func (m Model) launchStream(channel, quality, avatarURL string) (Model, tea.Cmd)
 	cmds := []tea.Cmd{waitPlayback(ctx, ch, channel, gen)}
 
 	// Start (or reuse) the chat session + IRC client for this channel.
-	newM, chatCmd, started := m.startChat(channel)
-	m = newM
-	if started {
-		cmds = append(cmds, chatCmd)
+	// With AutoOpen=false we only connect lazily — either when this stream
+	// launches while the pane is already visible, or when the user toggles
+	// the pane open later (handled in the C keybinding).
+	if m.chatConfig.AutoOpen || m.chatVisible {
+		newM, chatCmd, started := m.startChat(channel)
+		m = newM
+		if started {
+			cmds = append(cmds, chatCmd)
+		}
 	}
 
 	return m, tea.Batch(cmds...)

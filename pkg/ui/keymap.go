@@ -205,7 +205,21 @@ func (m Model) bindings() []Binding {
 			Keys: []string{"C"}, Display: "C", Desc: "Toggle chat pane",
 			Handler: func(m Model) (Model, tea.Cmd) {
 				m.chatVisible = !m.chatVisible
-				return m, nil
+				if !m.chatVisible {
+					return m, nil
+				}
+				// Lazy-connect: when AutoOpen is off, launchStream skips
+				// startChat so nothing connects until the user opens the
+				// pane. Reveal any active playback now.
+				var cmds []tea.Cmd
+				for channel := range m.sessions {
+					newM, cmd, started := m.startChat(channel)
+					m = newM
+					if started {
+						cmds = append(cmds, cmd)
+					}
+				}
+				return m, tea.Batch(cmds...)
 			},
 		},
 		{

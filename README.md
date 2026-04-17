@@ -15,7 +15,7 @@ No Twitch account, no OAuth, no tracking. Built-in ad blocking. Runs mpv or vlc 
 - **Desktop notifications** on stream start / ad break / drop with channel avatars
 - **Auto-refresh** at a configurable interval
 - **ASCII fallback** for terminals without Unicode (`--ascii`, `TERM=linux`)
-- **Live chat pane** per playing stream (anonymous, read-only). Pause on scroll-back, cycle with `c`, hide with `C`
+- **Live chat pane** per playing stream (anonymous, read-only); opens on demand with `C` or automatically via `[chat] auto-open`. Pause on scroll-back, cycle with `c`, hide with `C`
 
 ## Install
 
@@ -113,6 +113,8 @@ theme = "catppuccin"         # or: default, dracula, nord, solarized-dark,
 [chat]
 enabled     = true           # set false to never open IRC connections
 max-backlog = 500            # per-session message cap
+auto-open   = false          # true: connect + show pane on stream launch
+                             # false (default): connect lazily when you press C
 ```
 
 Environment variables:

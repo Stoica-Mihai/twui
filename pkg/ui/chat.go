@@ -31,10 +31,15 @@ type ChatConfig struct {
 	// MaxBacklog is the per-session message buffer cap. <=0 uses the
 	// package default (500).
 	MaxBacklog int
+	// AutoOpen controls whether the chat pane reveals itself when a stream
+	// launches. When false (the default), IRC still connects but the pane
+	// stays hidden until the user presses C.
+	AutoOpen bool
 }
 
-// DefaultChatConfig returns a ChatConfig with chat enabled and the default
-// backlog size. Used by NewModel so zero-configured Models behave sensibly.
+// DefaultChatConfig returns a ChatConfig with chat enabled, the default
+// backlog size, and the pane hidden until the user opens it. Used by NewModel
+// so zero-configured Models behave sensibly.
 func DefaultChatConfig() ChatConfig {
 	return ChatConfig{Enabled: true, MaxBacklog: defaultChatBacklog}
 }

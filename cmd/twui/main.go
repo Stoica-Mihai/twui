@@ -88,11 +88,12 @@ func init() {
 	rootCmd.PersistentFlags().Bool("low-latency", false, "Enable Twitch low-latency mode")
 	rootCmd.PersistentFlags().String("refresh", "", "Auto-refresh interval (e.g. 30s, 1m, 2m30s; 0 = off)")
 	rootCmd.PersistentFlags().Bool("ascii", false, "Use ASCII-only glyphs (auto-enabled for TERM=linux or TWUI_ASCII)")
-	rootCmd.PersistentFlags().Bool("chat", true, "Show the live chat pane when a stream is playing")
+	rootCmd.PersistentFlags().Bool("chat", true, "Connect to Twitch chat for playing streams")
+	rootCmd.PersistentFlags().Bool("chat-auto-open", false, "Open the chat pane automatically when a stream launches")
 }
 
-// loadChatConfig builds a ui.ChatConfig from the --chat flag and the [chat]
-// TOML section. Defaults: enabled=true, max-backlog=500.
+// loadChatConfig builds a ui.ChatConfig from the --chat* flags and the [chat]
+// TOML section. Defaults: enabled=true, max-backlog=500, auto-open=false.
 func loadChatConfig(cmd *cobra.Command) ui.ChatConfig {
 	cfg := ui.DefaultChatConfig()
 	if v, err := cmd.Root().PersistentFlags().GetBool("chat"); err == nil {
@@ -102,6 +103,11 @@ func loadChatConfig(cmd *cobra.Command) ui.ChatConfig {
 		if n := viper.GetInt("chat.max-backlog"); n > 0 {
 			cfg.MaxBacklog = n
 		}
+	}
+	if f := cmd.Root().PersistentFlags().Lookup("chat-auto-open"); f != nil && f.Changed {
+		cfg.AutoOpen, _ = cmd.Root().PersistentFlags().GetBool("chat-auto-open")
+	} else if viper.IsSet("chat.auto-open") {
+		cfg.AutoOpen = viper.GetBool("chat.auto-open")
 	}
 	return cfg
 }

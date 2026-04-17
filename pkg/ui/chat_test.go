@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -789,6 +790,56 @@ func TestChatConfig_DefaultEnablesChat(t *testing.T) {
 	}
 	if m.chatConfig.MaxBacklog != defaultChatBacklog {
 		t.Errorf("default backlog = %d, want %d", m.chatConfig.MaxBacklog, defaultChatBacklog)
+	}
+	if m.chatConfig.AutoOpen {
+		t.Error("default chatConfig should have AutoOpen=false")
+	}
+}
+
+func TestChatConfig_AutoOpenFalseSkipsConnectOnLaunch(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.fns.Launch = func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string), notice func(string)) {
+	}
+
+	newM, _ := m.launchStream("shroud", "", "")
+	t.Cleanup(func() {
+		if sess, ok := newM.sessions["shroud"]; ok {
+			sess.cancel()
+		}
+	})
+
+	if _, ok := newM.chatSessions["shroud"]; ok {
+		t.Error("AutoOpen=false should not create a chat session on launch")
+	}
+	if _, ok := newM.chatConns["shroud"]; ok {
+		t.Error("AutoOpen=false should not open an IRC connection on launch")
+	}
+	if newM.chatVisible {
+		t.Error("AutoOpen=false should leave chatVisible=false")
+	}
+}
+
+func TestChatConfig_AutoOpenTrueConnectsOnLaunch(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.chatConfig.AutoOpen = true
+	m.fns.Launch = func(ctx context.Context, channel, quality, avatarURL string, send func(Status, string), notice func(string)) {
+	}
+
+	newM, _ := m.launchStream("shroud", "", "")
+	t.Cleanup(func() {
+		if conn, ok := newM.chatConns["shroud"]; ok {
+			conn.cancel()
+		}
+		if sess, ok := newM.sessions["shroud"]; ok {
+			sess.cancel()
+		}
+	})
+
+	if _, ok := newM.chatSessions["shroud"]; !ok {
+		t.Error("AutoOpen=true should create a chat session on launch")
+	}
+	if !newM.chatVisible {
+		t.Error("AutoOpen=true should open the chat pane")
 	}
 }
 
