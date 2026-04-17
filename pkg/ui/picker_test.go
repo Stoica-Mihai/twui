@@ -2249,6 +2249,11 @@ func TestCellTruncate(t *testing.T) {
 		{"hello", 0, ""},
 		// Single width (only ellipsis fits)
 		{"hello", 1, "\u2026"},
+		// ANSI styling must not count toward visible width. The string below
+		// is "\x1b[31mhello\x1b[0m world" (11 visible cells); at width 11 it
+		// should fit as-is, at width 6 it should truncate to "hello…" with
+		// the surrounding escapes preserved around the visible prefix.
+		{"\x1b[31mhello\x1b[0m world", 11, "\x1b[31mhello\x1b[0m world"},
 	}
 	for _, tt := range tests {
 		got := cellTruncate(tt.s, tt.width)

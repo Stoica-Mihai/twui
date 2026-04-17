@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 )
 
@@ -357,22 +358,7 @@ func cellTruncate(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if uniseg.StringWidth(s) <= width {
-		return s
-	}
-	w := 0
-	var sb strings.Builder
-	gr := uniseg.NewGraphemes(s)
-	for gr.Next() {
-		gw := gr.Width()
-		if w+gw > width-1 { // leave 1 cell for the ellipsis
-			break
-		}
-		sb.WriteString(gr.Str())
-		w += gw
-	}
-	sb.WriteRune('…')
-	return sb.String()
+	return ansi.Truncate(s, width, "…")
 }
 
 func formatViewers(n int) string {

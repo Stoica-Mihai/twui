@@ -950,3 +950,26 @@ func TestRender_BodyShrinksWhenChatPaneShows(t *testing.T) {
 	}
 
 }
+
+func TestSubBadgeLabel(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"1", "1mo"},
+		{"12", "12mo"},
+		{"24", "24mo"},
+		// Tier-2 versions: "2" + months zero-padded.
+		{"2001", "T2 1mo"},
+		{"2024", "T2 24mo"},
+		// Tier-3 versions: "3" + months.
+		{"3012", "T3 12mo"},
+		// Non-numeric versions should pass through with the mo suffix.
+		{"", "mo"},
+		{"prime", "primemo"},
+	}
+	for _, tt := range tests {
+		if got := subBadgeLabel(tt.in); got != tt.want {
+			t.Errorf("subBadgeLabel(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

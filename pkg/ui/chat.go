@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -411,6 +412,26 @@ func (m Model) renderChatLine(msg chat.Chat) string {
 	return cellTruncate(b.String(), m.width-2)
 }
 
+// subBadgeLabel turns a Twitch subscriber-badge version string into a compact
+// label. Twitch encodes tier and months together: versions under 1000 are
+// tier-1 month counts; 2000-series are tier 2 (months = v-2000); 3000-series
+// are tier 3 (months = v-3000). Without this decoding, a 24-month tier-2 sub
+// renders as "2024mo" and looks like a two-millennium badge.
+func subBadgeLabel(version string) string {
+	v, err := strconv.Atoi(version)
+	if err != nil || v < 0 {
+		return version + "mo"
+	}
+	switch {
+	case v >= 3000 && v < 4000:
+		return fmt.Sprintf("T3 %dmo", v-3000)
+	case v >= 2000 && v < 3000:
+		return fmt.Sprintf("T2 %dmo", v-2000)
+	default:
+		return fmt.Sprintf("%dmo", v)
+	}
+}
+
 // renderChatBadge returns a short styled label for one Twitch badge. Unknown
 // badge kinds render as empty so the row stays clean.
 func (m Model) renderChatBadge(b chat.Badge) string {
@@ -424,7 +445,7 @@ func (m Model) renderChatBadge(b chat.Badge) string {
 	case "vip":
 		label, style = "[VIP]", m.styles.tabActive
 	case "subscriber":
-		label, style = "["+b.Version+"mo]", m.styles.favorite
+		label, style = "["+subBadgeLabel(b.Version)+"]", m.styles.favorite
 	default:
 		return ""
 	}
