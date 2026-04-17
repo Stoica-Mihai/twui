@@ -40,6 +40,31 @@ jobs:
         # not here. They'd flake and hit the real API from CI.
         run: go test -race -coverprofile=coverage.out -covermode=atomic -skip '^TestLive_' ./...
 
+      - name: Coverage summary
+        if: matrix.os == 'ubuntu-latest'
+        # Non-blocking report: prints per-package coverage into the job
+        # summary so reviewers see it without having to download the artifact.
+        # Not a gate — no threshold enforcement (yet).
+        run: |
+          {
+            echo "## Coverage"
+            echo ""
+            echo '```'
+            go tool cover -func=coverage.out | awk '
+              /\.go:/ { next }
+              /^total:/ { total=$3 }
+              {
+                pkg=$1; sub(/\/[^/]+$/,"",pkg); sub(/^github.com\/mcs\/twui\//,"",pkg);
+                sum[pkg]+=$3+0; cnt[pkg]++
+              }
+              END {
+                for (p in sum) printf "%-30s %6.1f%%\n", p, sum[p]/cnt[p]
+                printf "%-30s %s\n", "TOTAL", total
+              }
+            ' | sort
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload coverage artifact
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
