@@ -475,7 +475,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			if err != nil {
 				return nil, err
 			}
-			entries := make([]ui.DiscoveryEntry, 0, relatedPoolSize)
+			entries := make([]ui.DiscoveryEntry, 0, len(streams))
 			for _, s := range streams {
 				if strings.EqualFold(s.Login, channel) {
 					continue
@@ -495,9 +495,15 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					IsFavorite:  favSet[s.Login],
 					IsLive:      true,
 				})
-				if len(entries) >= relatedPoolSize {
-					break
-				}
+			}
+			// Twitch's category-streams order isn't strictly by viewer count
+			// (featured slots etc.), so re-sort locally so users always see
+			// the biggest streams first.
+			sort.SliceStable(entries, func(i, j int) bool {
+				return entries[i].ViewerCount > entries[j].ViewerCount
+			})
+			if len(entries) > relatedPoolSize {
+				entries = entries[:relatedPoolSize]
 			}
 			return entries, nil
 		},

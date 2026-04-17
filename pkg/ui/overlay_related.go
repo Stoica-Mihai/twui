@@ -63,47 +63,72 @@ func (m Model) renderRelatedOverlay() string {
 		}
 
 		selIdx := m.overlayCursor
-		t := table.New().
-			Border(lipgloss.NormalBorder()).
-			BorderStyle(m.styles.border).
-			BorderTop(false).
-			BorderBottom(false).
-			BorderLeft(false).
-			BorderRight(false).
-			BorderRow(false).
-			BorderColumn(false).
-			BorderHeader(true).
-			Width(w).
-			Headers("Channel", "Viewers").
-			StyleFunc(func(row, col int) lipgloss.Style {
-				// Column alignment is unconditional so header and body
-				// line up and the selected-row highlight still spans the
-				// full right-aligned viewer cell.
-				base := lipgloss.NewStyle().Padding(0, 1)
-				if col == 1 {
-					base = base.Align(lipgloss.Right)
+		// BorderHeader(false) — lipgloss's built-in header rule stops at
+		// the last cell's content instead of spanning the full table width,
+		// leaving a notch at the right edge. We draw our own full-width
+		// rule immediately after the header row, before the data rows.
+		buildTable := func(headerOnly, dataOnly bool) string {
+			b := table.New().
+				Border(lipgloss.NormalBorder()).
+				BorderStyle(m.styles.border).
+				BorderTop(false).
+				BorderBottom(false).
+				BorderLeft(false).
+				BorderRight(false).
+				BorderRow(false).
+				BorderColumn(false).
+				BorderHeader(false).
+				Width(w).
+				Headers("Channel", "Viewers").
+				StyleFunc(func(row, col int) lipgloss.Style {
+					base := lipgloss.NewStyle().Padding(0, 1)
+					if col == 1 {
+						base = base.Align(lipgloss.Right)
+					}
+					switch {
+					case row == table.HeaderRow:
+						return base.Inherit(m.styles.title)
+					case row == selIdx:
+						return base.Inherit(m.styles.selected)
+					case col == 1:
+						return base.Inherit(m.styles.offline)
+					default:
+						return base.Inherit(m.styles.live)
+					}
+				})
+			if !headerOnly {
+				b = b.Rows(rows...)
+			}
+			out := b.String()
+			if headerOnly {
+				// Keep only the first line (the header row).
+				if idx := strings.IndexByte(out, '\n'); idx >= 0 {
+					out = out[:idx]
 				}
-				// Per-state fg/bg layered on top of the column alignment.
-				switch {
-				case row == table.HeaderRow:
-					return base.Inherit(m.styles.title)
-				case row == selIdx:
-					return base.Inherit(m.styles.selected)
-				case col == 1:
-					return base.Inherit(m.styles.offline)
-				default:
-					return base.Inherit(m.styles.live)
+			} else if dataOnly {
+				// Drop the first line (the auto-rendered header) so only
+				// data rows come through.
+				if idx := strings.IndexByte(out, '\n'); idx >= 0 {
+					out = out[idx+1:]
 				}
-			}).
-			Rows(rows...)
+			}
+			return out
+		}
 
-		// Wrap each rendered table line with the overlay's side borders.
-		for _, tl := range strings.Split(t.String(), "\n") {
+		lines = append(lines, m.overlayRow(buildTable(true, false)))
+		lines = append(lines, m.overlayRow(m.styles.border.Render(strings.Repeat("─", w))))
+		for _, tl := range strings.Split(buildTable(false, true), "\n") {
+			if tl == "" {
+				continue
+			}
 			lines = append(lines, m.overlayRow(tl))
 		}
 
 		if remaining > 0 {
-			hint := fmt.Sprintf("  · %d more in pool — ignore visible rows to reveal", remaining)
+			// Trailing space matches the 1-cell right padding the table
+			// cells apply, so the hint row's right edge lines up with the
+			// data rows when wrapped by overlayRow's side border.
+			hint := fmt.Sprintf("  · %d more in pool — ignore visible rows to reveal ", remaining)
 			lines = append(lines, m.overlayRow(m.styles.text.Render(padRight(hint, w))))
 		}
 	}
