@@ -205,16 +205,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	lowLatency, _ := cmd.Root().PersistentFlags().GetBool("low-latency")
 	client.LowLatency = lowLatency
 
-	// Load theme
-	themeName := viper.GetString("theming.theme")
-	theme := ui.ThemeByName(themeName)
-	// Apply hex overrides
-	applyHexOverrides(&theme)
-	// Honor the NO_COLOR convention (https://no-color.org/). Any non-empty value
-	// disables colors regardless of theme; not persisted to config.
-	if os.Getenv("NO_COLOR") != "" {
-		theme.Monochrome = true
-	}
+	theme := loadTheme()
 
 	// Load favorites and ignored
 	favorites := viper.GetStringSlice("twitch.channels")
@@ -272,19 +263,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 			entries := make([]ui.DiscoveryEntry, 0, len(results))
 			for _, r := range results {
-				e := ui.DiscoveryEntry{
-					Kind:        ui.EntryChannel,
-					Login:       r.Login,
-					DisplayName: r.DisplayName,
-					Title:       r.Title,
-					Category:    r.Category,
-					ViewerCount: r.ViewerCount,
-					StartedAt:   r.StartedAt,
-					AvatarURL:   r.AvatarURL,
-					IsFavorite:  favSet[r.Login],
-					IsLive:      !r.StartedAt.IsZero(),
-				}
-				entries = append(entries, e)
+				entries = append(entries, channelEntry(r, favSet, !r.StartedAt.IsZero()))
 			}
 			return entries, nil
 		},
@@ -317,19 +296,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 			entries := make([]ui.DiscoveryEntry, 0, len(streams))
 			for _, r := range streams {
-				e := ui.DiscoveryEntry{
-					Kind:        ui.EntryChannel,
-					Login:       r.Login,
-					DisplayName: r.DisplayName,
-					Title:       r.Title,
-					Category:    r.Category,
-					ViewerCount: r.ViewerCount,
-					StartedAt:   r.StartedAt,
-					AvatarURL:   r.AvatarURL,
-					IsFavorite:  favSet[r.Login],
-					IsLive:      true,
-				}
-				entries = append(entries, e)
+				entries = append(entries, channelEntry(r, favSet, true))
 			}
 			return entries, "", nil
 		},
@@ -510,7 +477,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				favorites = slices.DeleteFunc(favorites, func(s string) bool { return s == channel })
 				delete(favSet, channel)
 			}
-			writeConfigList("twitch.channels", favorites)
+			writeConfigValue("twitch.channels", favorites)
 		},
 
 		ToggleIgnore: func(channel string, add bool) {
@@ -523,7 +490,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				ignored = slices.DeleteFunc(ignored, func(s string) bool { return s == channel })
 				delete(ignSet, channel)
 			}
-			writeConfigList("twitch.ignored", ignored)
+			writeConfigValue("twitch.ignored", ignored)
 		},
 
 		IgnoreList: func() []string {
@@ -548,18 +515,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				if ignSet[s.Login] {
 					continue
 				}
-				entries = append(entries, ui.DiscoveryEntry{
-					Kind:        ui.EntryChannel,
-					Login:       s.Login,
-					DisplayName: s.DisplayName,
-					Title:       s.Title,
-					Category:    s.Category,
-					ViewerCount: s.ViewerCount,
-					StartedAt:   s.StartedAt,
-					AvatarURL:   s.AvatarURL,
-					IsFavorite:  favSet[s.Login],
-					IsLive:      true,
-				})
+				entries = append(entries, channelEntry(s, favSet, true))
 			}
 			// Twitch's category-streams order isn't strictly by viewer count
 			// (featured slots etc.), so re-sort locally so users always see
@@ -574,14 +530,13 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		},
 
 		WriteTheme: func(name string) {
-			writeConfigString("theming.theme", name)
+			writeConfigValue("theming.theme", name)
 		},
 	}
 
-	refreshStr, _ := cmd.Root().PersistentFlags().GetString("refresh")
-	refreshInterval, err := parseRefreshInterval(refreshStr)
+	refreshInterval, err := loadRefreshInterval(cmd)
 	if err != nil {
-		return fmt.Errorf("twui: %w", err)
+		return err
 	}
 
 	model := ui.NewModel(fns, theme, refreshInterval)
@@ -602,17 +557,11 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 // player, no IRC connect. Every discovery callback and the chat source are
 // backed by hardcoded fixtures in demo.go.
 func runDemoTUI(cmd *cobra.Command) error {
-	themeName := viper.GetString("theming.theme")
-	theme := ui.ThemeByName(themeName)
-	applyHexOverrides(&theme)
-	if os.Getenv("NO_COLOR") != "" {
-		theme.Monochrome = true
-	}
+	theme := loadTheme()
 
-	refreshStr, _ := cmd.Root().PersistentFlags().GetString("refresh")
-	refreshInterval, err := parseRefreshInterval(refreshStr)
+	refreshInterval, err := loadRefreshInterval(cmd)
 	if err != nil {
-		return fmt.Errorf("twui: %w", err)
+		return err
 	}
 
 	model := ui.NewModel(demoFuncs(), theme, refreshInterval)
@@ -628,37 +577,68 @@ func runDemoTUI(cmd *cobra.Command) error {
 	return nil
 }
 
+// channelEntry adapts a twitch.ChannelResult into a ui.DiscoveryEntry.
+// isLive is caller-supplied because Search relies on StartedAt presence while
+// CategoryStreams and RelatedChannels know the endpoint returns live streams.
+func channelEntry(r twitch.ChannelResult, favSet map[string]bool, isLive bool) ui.DiscoveryEntry {
+	return ui.DiscoveryEntry{
+		Kind:        ui.EntryChannel,
+		Login:       r.Login,
+		DisplayName: r.DisplayName,
+		Title:       r.Title,
+		Category:    r.Category,
+		ViewerCount: r.ViewerCount,
+		StartedAt:   r.StartedAt,
+		AvatarURL:   r.AvatarURL,
+		IsFavorite:  favSet[r.Login],
+		IsLive:      isLive,
+	}
+}
+
+// loadTheme resolves the active theme from config: the named preset, then
+// hex overrides from [theming], then NO_COLOR (https://no-color.org/) which
+// forces monochrome regardless of what's configured.
+func loadTheme() ui.Theme {
+	theme := ui.ThemeByName(viper.GetString("theming.theme"))
+	applyHexOverrides(&theme)
+	if os.Getenv("NO_COLOR") != "" {
+		theme.Monochrome = true
+	}
+	return theme
+}
+
+// loadRefreshInterval resolves the auto-refresh interval from the --refresh
+// flag, validated by parseRefreshInterval. Both entry points (real TUI and
+// --demo) apply the same validation so bad input fails the same way.
+func loadRefreshInterval(cmd *cobra.Command) (time.Duration, error) {
+	refreshStr, _ := cmd.Root().PersistentFlags().GetString("refresh")
+	d, err := parseRefreshInterval(refreshStr)
+	if err != nil {
+		return 0, fmt.Errorf("twui: %w", err)
+	}
+	return d, nil
+}
+
 // applyHexOverrides reads hex color overrides from the [theming] config section.
+// The field-to-key mapping lives in one place so adding a new themable color
+// is a single-line table change.
 func applyHexOverrides(t *ui.Theme) {
-	if v := viper.GetString("theming.border"); v != "" {
-		t.Border = v
+	overrides := map[string]*string{
+		"theming.border":      &t.Border,
+		"theming.text":        &t.Text,
+		"theming.live":        &t.Live,
+		"theming.offline":     &t.Offline,
+		"theming.title":       &t.Title,
+		"theming.selected_bg": &t.SelectedBg,
+		"theming.selected_fg": &t.SelectedFg,
+		"theming.tab_active":  &t.TabActive,
+		"theming.category":    &t.Category,
+		"theming.favorite":    &t.Favorite,
 	}
-	if v := viper.GetString("theming.text"); v != "" {
-		t.Text = v
-	}
-	if v := viper.GetString("theming.live"); v != "" {
-		t.Live = v
-	}
-	if v := viper.GetString("theming.offline"); v != "" {
-		t.Offline = v
-	}
-	if v := viper.GetString("theming.title"); v != "" {
-		t.Title = v
-	}
-	if v := viper.GetString("theming.selected_bg"); v != "" {
-		t.SelectedBg = v
-	}
-	if v := viper.GetString("theming.selected_fg"); v != "" {
-		t.SelectedFg = v
-	}
-	if v := viper.GetString("theming.tab_active"); v != "" {
-		t.TabActive = v
-	}
-	if v := viper.GetString("theming.category"); v != "" {
-		t.Category = v
-	}
-	if v := viper.GetString("theming.favorite"); v != "" {
-		t.Favorite = v
+	for key, dst := range overrides {
+		if v := viper.GetString(key); v != "" {
+			*dst = v
+		}
 	}
 }
 
@@ -810,8 +790,10 @@ func atomicWriteFile(path, content string) error {
 	return os.Rename(tmpName, path)
 }
 
-// writeConfigString persists a single string config value to the config file.
-func writeConfigString(key, value string) {
+// writeConfigValue persists any TOML-encodable value at a dotted key, routing
+// through viper's tracked config file. Write failures are logged — the UI
+// can't surface them usefully mid-render.
+func writeConfigValue(key string, value any) {
 	viper.Set(key, value)
 	configFile := viper.ConfigFileUsed()
 	if configFile == "" {
@@ -822,49 +804,20 @@ func writeConfigString(key, value string) {
 		}
 		viper.SetConfigFile(configFile)
 	}
-	if err := writeConfigStringKey(configFile, key, value); err != nil {
+	if err := writeTomlValue(configFile, key, value); err != nil {
 		slog.Warn("Failed to write config", "key", key, "err", err)
 	}
 }
 
-// writeConfigStringKey sets a string value at a dotted TOML key and writes the file.
-// Parses existing TOML into a map, updates the key, and marshals the result —
-// unknown sections and sibling keys are preserved.
-func writeConfigStringKey(path, key, value string) error {
+// writeTomlValue sets a value at a dotted TOML key inside path and writes the
+// file atomically. Existing sections and sibling keys are preserved. Exposed
+// at file-level so tests can exercise the TOML merge logic without viper.
+func writeTomlValue(path, key string, value any) error {
 	m, err := loadTomlMap(path)
 	if err != nil {
 		return err
 	}
 	setByDottedKey(m, key, value)
-	return marshalAndWriteAtomic(path, m)
-}
-
-// writeConfigList persists a config list value to the config file.
-func writeConfigList(key string, values []string) {
-	viper.Set(key, values)
-	configFile := viper.ConfigFileUsed()
-	if configFile == "" {
-		var err error
-		configFile, err = resolveConfigFile()
-		if err != nil {
-			return
-		}
-		viper.SetConfigFile(configFile)
-	}
-	if err := writeConfigKey(configFile, key, values); err != nil {
-		slog.Warn("Failed to write config", "key", key, "err", err)
-	}
-}
-
-// writeConfigKey sets a string-list value at a dotted TOML key and writes the file.
-// Parses existing TOML into a map, updates the key, and marshals the result —
-// unknown sections and sibling keys are preserved.
-func writeConfigKey(path, key string, values []string) error {
-	m, err := loadTomlMap(path)
-	if err != nil {
-		return err
-	}
-	setByDottedKey(m, key, values)
 	return marshalAndWriteAtomic(path, m)
 }
 

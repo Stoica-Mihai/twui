@@ -181,13 +181,13 @@ func containsValue(content, value string) bool {
 	return strings.Contains(content, `"`+value+`"`) || strings.Contains(content, `'`+value+`'`)
 }
 
-// --- writeConfigKey ---
+// --- writeTomlValue (list values) ---
 
 func TestWriteConfigKey_NewFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	err := writeConfigKey(path, "twitch.channels", []string{"alice", "bob"})
+	err := writeTomlValue(path, "twitch.channels", []string{"alice", "bob"})
 	if err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestWriteConfigKey_ReplaceExisting(t *testing.T) {
 	initial := "[twitch]\nchannels = [\"old\"]\n"
 	_ = os.WriteFile(path, []byte(initial), 0600)
 
-	err := writeConfigKey(path, "twitch.channels", []string{"new1", "new2"})
+	err := writeTomlValue(path, "twitch.channels", []string{"new1", "new2"})
 	if err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestWriteConfigKey_AppendWhenMissing(t *testing.T) {
 	initial := "[twitch]\n"
 	_ = os.WriteFile(path, []byte(initial), 0600)
 
-	err := writeConfigKey(path, "twitch.channels", []string{"only"})
+	err := writeTomlValue(path, "twitch.channels", []string{"only"})
 	if err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestWriteConfigKey_EmptyList(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 	_ = os.WriteFile(path, []byte("[twitch]\nchannels = [\"old\"]\n"), 0600)
 
-	err := writeConfigKey(path, "twitch.channels", []string{})
+	err := writeTomlValue(path, "twitch.channels", []string{})
 	if err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
@@ -258,13 +258,13 @@ func TestWriteConfigKey_EmptyList(t *testing.T) {
 	}
 }
 
-// --- writeConfigStringKey ---
+// --- writeTomlValue (string values) ---
 
 func TestWriteConfigStringKey_NewFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	err := writeConfigStringKey(path, "theming.theme", "catppuccin")
+	err := writeTomlValue(path, "theming.theme", "catppuccin")
 	if err != nil {
 		t.Fatalf("writeConfigStringKey: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestWriteConfigStringKey_ReplaceExisting(t *testing.T) {
 	initial := "[theming]\ntheme = \"dracula\"\n"
 	_ = os.WriteFile(path, []byte(initial), 0600)
 
-	err := writeConfigStringKey(path, "theming.theme", "nord")
+	err := writeTomlValue(path, "theming.theme", "nord")
 	if err != nil {
 		t.Fatalf("writeConfigStringKey: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestWriteConfigStringKey_AppendWhenMissing(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 	_ = os.WriteFile(path, []byte("[theming]\n"), 0600)
 
-	err := writeConfigStringKey(path, "theming.theme", "gruvbox")
+	err := writeTomlValue(path, "theming.theme", "gruvbox")
 	if err != nil {
 		t.Fatalf("writeConfigStringKey: %v", err)
 	}
@@ -321,11 +321,11 @@ func TestWriteConfigKey_NoKeyDuplication(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 
 	// First write creates the entry.
-	if err := writeConfigKey(path, "twitch.channels", []string{"alice"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"alice"}); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	// Second write should replace, not duplicate.
-	if err := writeConfigKey(path, "twitch.channels", []string{"alice", "bob"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"alice", "bob"}); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 
@@ -345,7 +345,7 @@ func TestWriteConfigKey_FixesDottedKey(t *testing.T) {
 	// Simulate buggy file from old code that wrote the full dotted form.
 	_ = os.WriteFile(path, []byte("twitch.channels = [\"old\"]\n"), 0600)
 
-	if err := writeConfigKey(path, "twitch.channels", []string{"fixed"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"fixed"}); err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 
@@ -367,7 +367,7 @@ func TestWriteConfigKey_AppendsUnderSection(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 	_ = os.WriteFile(path, []byte("[twitch]\n"), 0600)
 
-	if err := writeConfigKey(path, "twitch.channels", []string{"a"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"a"}); err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 
@@ -386,7 +386,7 @@ func TestWriteConfigKey_CreatesSection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	if err := writeConfigKey(path, "twitch.channels", []string{"new"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"new"}); err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 
@@ -407,10 +407,10 @@ func TestWriteConfigStringKey_NoKeyDuplication(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	if err := writeConfigStringKey(path, "theming.theme", "dracula"); err != nil {
+	if err := writeTomlValue(path, "theming.theme", "dracula"); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := writeConfigStringKey(path, "theming.theme", "nord"); err != nil {
+	if err := writeTomlValue(path, "theming.theme", "nord"); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 
@@ -430,7 +430,7 @@ func TestWriteConfigStringKey_FixesDottedKey(t *testing.T) {
 	// Simulate buggy file.
 	_ = os.WriteFile(path, []byte("theming.theme = \"old-theme\"\n"), 0600)
 
-	if err := writeConfigStringKey(path, "theming.theme", "fixed"); err != nil {
+	if err := writeTomlValue(path, "theming.theme", "fixed"); err != nil {
 		t.Fatalf("writeConfigStringKey: %v", err)
 	}
 
@@ -457,7 +457,7 @@ func TestWriteConfigKey_MultilineArrayRewrite(t *testing.T) {
 	initial := "[twitch]\nchannels = [\n  \"alice\",\n  \"bob\",\n]\n"
 	_ = os.WriteFile(path, []byte(initial), 0600)
 
-	if err := writeConfigKey(path, "twitch.channels", []string{"carol"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"carol"}); err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 
@@ -480,7 +480,7 @@ func TestWriteConfigKey_DuplicateNameAcrossTables(t *testing.T) {
 	initial := "[twitch]\nchannels = [\"alice\"]\n\n[other]\nchannels = [\"keep\"]\n"
 	_ = os.WriteFile(path, []byte(initial), 0600)
 
-	if err := writeConfigKey(path, "twitch.channels", []string{"bob"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"bob"}); err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 
@@ -504,11 +504,11 @@ func TestWriteConfigKey_ValueWithQuote(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	if err := writeConfigKey(path, "twitch.channels", []string{`has"quote`}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{`has"quote`}); err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 	// Second write should still parse the first, not corrupt on match.
-	if err := writeConfigKey(path, "twitch.channels", []string{"plain"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"plain"}); err != nil {
 		t.Fatalf("writeConfigKey (second): %v", err)
 	}
 
@@ -530,7 +530,7 @@ func TestWriteConfigKey_PreservesUnknownSections(t *testing.T) {
 	initial := "[twitch]\nchannels = [\"alice\"]\n\n[unknown]\nfuture_field = \"value\"\n"
 	_ = os.WriteFile(path, []byte(initial), 0600)
 
-	if err := writeConfigKey(path, "twitch.channels", []string{"bob"}); err != nil {
+	if err := writeTomlValue(path, "twitch.channels", []string{"bob"}); err != nil {
 		t.Fatalf("writeConfigKey: %v", err)
 	}
 
