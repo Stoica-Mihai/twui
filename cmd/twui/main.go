@@ -398,33 +398,42 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 
 			// Twitch redeclares the same ad break on every playlist refresh,
-			// so OnAdBreak / OnAdEnd can fire dozens of times across a
-			// single real break. Gate the desktop notifications to one
-			// emit per kind per adNotifyCooldown window so the user sees
-			// a single "Ad break" / "Ad break ended" per actual event.
-			const adNotifyCooldown = 30 * time.Second
+			// so raw OnAdBreak / OnAdEnd callbacks fire many times across
+			// a single real event. Collapse them into one "Ad break" at
+			// the start of the bypass cycle and one "Ad break ended" once
+			// no new detection has arrived for adEndDebounce.
+			const adEndDebounce = 15 * time.Second
 			var (
-				adNotifyMu   sync.Mutex
-				lastBreakAt  time.Time
-				lastBreakEnd time.Time
+				adNotifyMu sync.Mutex
+				inAdBreak  bool
+				endTimer   *time.Timer
 			)
-			shouldNotify := func(last *time.Time) bool {
-				adNotifyMu.Lock()
-				defer adNotifyMu.Unlock()
-				if time.Since(*last) < adNotifyCooldown {
-					return false
-				}
-				*last = time.Now()
-				return true
-			}
 
 			// Wire up notification hooks before opening.
 			if abn, ok := s.(stream.AdBreakNotifier); ok {
 				abn.SetOnAdBreak(func(duration float64, adType string) {
-					if shouldNotify(&lastBreakAt) {
+					send(ui.StatusAdBreak, "")
+
+					adNotifyMu.Lock()
+					firstOfBreak := !inAdBreak
+					inAdBreak = true
+					if endTimer != nil {
+						endTimer.Stop()
+					}
+					endTimer = time.AfterFunc(adEndDebounce, func() {
+						adNotifyMu.Lock()
+						wasIn := inAdBreak
+						inAdBreak = false
+						adNotifyMu.Unlock()
+						if wasIn {
+							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+						}
+					})
+					adNotifyMu.Unlock()
+
+					if firstOfBreak {
 						notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
 					}
-					send(ui.StatusAdBreak, "")
 
 					// Try to skip the ad by swapping the HLS session under
 					// the player. Runs in its own goroutine so the HLS
@@ -451,9 +460,10 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 			if aen, ok := s.(stream.AdEndNotifier); ok {
 				aen.SetOnAdEnd(func() {
-					if shouldNotify(&lastBreakEnd) {
-						notifier.SendWithIcon(channel, "Ad break ended", getIcon())
-					}
+					// No notification here — OnAdEnd fires after every
+					// bypass+content handoff, not at the real end of the
+					// break. The debounce timer in OnAdBreak owns the
+					// user-visible "ended" signal.
 					send(ui.StatusPlaying, q)
 				})
 			}
