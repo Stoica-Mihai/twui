@@ -398,6 +398,14 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					if bypasser == nil {
 						return
 					}
+					// Preroll can't be bypassed — hadContent is false, so
+					// BypassAdBreak always returns ErrBypassPreContent
+					// until the preroll finishes. Starting the pump here
+					// just logs a skip every tick for 15+ seconds. Wait
+					// for a midroll before firing up.
+					if strings.EqualFold(adType, "PREROLL") {
+						return
+					}
 					pumpMu.Lock()
 					if pumpStopTimer != nil {
 						pumpStopTimer.Stop()
