@@ -81,10 +81,12 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		if c.delay > 0 {
+			t := time.NewTimer(c.delay)
 			select {
 			case <-ctx.Done():
+				t.Stop()
 				return ctx.Err()
-			case <-time.After(c.delay):
+			case <-t.C:
 			}
 		}
 
