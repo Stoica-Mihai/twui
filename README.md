@@ -10,7 +10,7 @@
 
 Anonymous Twitch TUI for browsing and watching live streams.
 
-No Twitch account, no OAuth, no tracking. Built-in ad blocking. Runs mpv or vlc under the hood.
+No Twitch account, no OAuth, no tracking. Plays through Twitch ad breaks with live HLS-session bypass — the player never stalls on a midroll. Runs mpv or vlc under the hood.
 
 <p align="center">
   <img src="assets/demo.gif" alt="twui demo" width="800">
@@ -21,7 +21,7 @@ No Twitch account, no OAuth, no tracking. Built-in ad blocking. Runs mpv or vlc 
 - Browse live streams by **category** or **search** channels by name
 - **Favorites** (WatchList tab) with live status, viewer count, uptime
 - **Ignore list** — hide channels everywhere with `x`
-- **Ad blocking** via a filtered HLS stream
+- **Ad-break bypass** — segment-level ad filtering plus a live HLS-session swap under the running player, so midrolls turn into a short glitch instead of a silent pause. MPEG-TS PCR/PTS/DTS and continuity counters are rewritten at the swap boundary to keep the player's demuxer happy.
 - **Quality picker** (`i`) or auto-best
 - **Theme picker** (`t`) with 11 presets; honors `NO_COLOR`
 - **Auto-refresh** at a configurable interval
