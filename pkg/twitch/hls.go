@@ -12,6 +12,7 @@ import (
 
 	"github.com/mcs/twui/pkg/stream"
 	"github.com/mcs/twui/pkg/stream/hls"
+	"github.com/mcs/twui/pkg/stream/tsbridge"
 )
 
 // TwitchSegment extends hls.Segment with Twitch-specific flags.
@@ -61,6 +62,11 @@ type TwitchHLSStream struct {
 	// the single reader the player holds; the embedded HLSStream.Filtered
 	// drifts out of date after a swap and must not be used for control.
 	outer *stream.FilteredStream
+
+	// bridge sits between outer and the consumer and rewrites TS PCR/PTS
+	// values so the timeline stays continuous across bypass swaps.
+	// Populated on first Open.
+	bridge *tsbridge.Bridge
 
 	// bypassInFlight is set while a BypassAdBreak call is running; a
 	// concurrent caller finds it set and drops its request rather than
@@ -130,16 +136,20 @@ func (t *TwitchHLSStream) wireHooks(h *hls.HLSStream) {
 
 // Open starts the inner HLS pipeline and records the returned FilteredStream
 // as the outer reader — the one the player holds and the one pause/resume
-// must address even after a BypassAdBreak swap.
+// must address even after a BypassAdBreak swap. Wraps the returned reader
+// in a tsbridge.Bridge so BypassAdBreak can keep the TS timeline continuous
+// across source swaps by calling MarkSwap.
 func (t *TwitchHLSStream) Open() (io.ReadCloser, error) {
 	rc, err := t.HLSStream.Open()
 	if err != nil {
 		return nil, err
 	}
+	br := tsbridge.New(rc)
 	t.mu.Lock()
 	t.outer = t.HLSStream.Filtered
+	t.bridge = br
 	t.mu.Unlock()
-	return rc, nil
+	return br, nil
 }
 
 // outerFiltered returns the FilteredStream the consumer is reading from —
@@ -250,6 +260,17 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	var swapReader io.ReadCloser = newReader
 	if hErr == nil && len(head) > 0 {
 		swapReader = &prependedReader{head: head, rest: newReader}
+	}
+
+	// Tell the bridge the timeline is about to change so it rewrites
+	// PCR/PTS/DTS on post-swap packets to continue from the last values
+	// emitted. Must happen before SwapReader so the bridge is in
+	// rewrite mode by the time the new source's first packet arrives.
+	t.mu.Lock()
+	bridge := t.bridge
+	t.mu.Unlock()
+	if bridge != nil {
+		bridge.MarkSwap()
 	}
 
 	// SwapReader closes the old pipe reader (unblocking any in-flight
