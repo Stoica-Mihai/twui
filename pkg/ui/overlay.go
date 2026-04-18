@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 )
 
@@ -78,8 +79,10 @@ func (m Model) renderListOverlay(title string, minWidth int, count int, cursor i
 	return strings.Join(lines, "\n")
 }
 
-// overlayOn centers overlay content on top of the base string. Visible cells
-// are measured after stripping ANSI so styled content doesn't inflate width.
+// overlayOn centers overlay content on top of the base string, preserving
+// base content to the left and right of the overlay's visual footprint.
+// ANSI styles survive slicing because ansi.Cut re-emits whatever SGR state
+// was active at the cut boundary.
 func overlayOn(base, overlay string, width, height int) string {
 	baseLines := strings.Split(base, "\n")
 	overlayLines := strings.Split(overlay, "\n")
@@ -87,8 +90,7 @@ func overlayOn(base, overlay string, width, height int) string {
 	oHeight := len(overlayLines)
 	oWidth := 0
 	for _, l := range overlayLines {
-		plain := stripANSI(l)
-		if w := uniseg.StringWidth(plain); w > oWidth {
+		if w := uniseg.StringWidth(stripANSI(l)); w > oWidth {
 			oWidth = w
 		}
 	}
@@ -102,13 +104,30 @@ func overlayOn(base, overlay string, width, height int) string {
 	result := make([]string, len(baseLines))
 	copy(result, baseLines)
 
-	pad := strings.Repeat(" ", leftPad)
+	rightStart := leftPad + oWidth
 	for i, ol := range overlayLines {
 		row := topPad + i
 		if row < 0 || row >= len(result) {
 			continue
 		}
-		result[row] = pad + ol
+		baseLine := result[row]
+		baseW := uniseg.StringWidth(stripANSI(baseLine))
+
+		// Left portion of the base line that stays visible beside the overlay.
+		var leftPart string
+		if baseW >= leftPad {
+			leftPart = ansi.Cut(baseLine, 0, leftPad)
+		} else {
+			leftPart = baseLine + strings.Repeat(" ", leftPad-baseW)
+		}
+
+		// Right portion that stays visible on the other side.
+		var rightPart string
+		if baseW > rightStart {
+			rightPart = ansi.Cut(baseLine, rightStart, baseW)
+		}
+
+		result[row] = leftPart + ol + rightPart
 	}
 
 	return strings.Join(result, "\n")

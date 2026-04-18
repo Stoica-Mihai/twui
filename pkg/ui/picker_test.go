@@ -2232,6 +2232,50 @@ func TestModel_RenderFooter_BrowseCategoryShowsBreadcrumb(t *testing.T) {
 	}
 }
 
+// At narrow widths the footer collapses to keys-only rather than wrapping
+// onto a second row. Every binding must still be visible — responsiveness
+// means adapting the presentation, not hiding actions.
+func TestModel_RenderFooter_NarrowCollapsesToKeys(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.mode = viewModeWatchList
+	m.watchList = []DiscoveryEntry{{Kind: EntryChannel, Login: "a", IsLive: true}}
+	m.width = 70
+	m.height = 30
+
+	footer := m.renderFooter()
+	plain := stripANSI(footer)
+
+	if strings.Contains(plain, "\n") {
+		t.Errorf("footer wrapped at narrow width: %q", plain)
+	}
+	// Descriptions are hidden in keys-only mode.
+	if strings.Contains(plain, "theme") || strings.Contains(plain, "related") {
+		t.Errorf("narrow footer should drop descriptions, got %q", plain)
+	}
+	// All keys must still be present so every binding stays discoverable.
+	for _, key := range []string{"Enter", "i", "f", "x", "r", "t", "?"} {
+		if !strings.Contains(plain, key) {
+			t.Errorf("narrow footer missing key %q, got %q", key, plain)
+		}
+	}
+}
+
+// At wide widths every hint keeps its description.
+func TestModel_RenderFooter_WideKeepsAllHints(t *testing.T) {
+	m := newTestModel(&mockState{})
+	m.mode = viewModeWatchList
+	m.watchList = []DiscoveryEntry{{Kind: EntryChannel, Login: "a", IsLive: true}}
+	m.width = 160
+	m.height = 30
+
+	plain := stripANSI(m.renderFooter())
+	for _, want := range []string{"Enter", "quality", "fav", "ignore", "related", "theme", "help"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("wide footer missing %q, got %q", want, plain)
+		}
+	}
+}
+
 func TestModel_RenderFooter_NoticeOverrides(t *testing.T) {
 	state := &mockState{}
 	m := newTestModel(state)

@@ -631,22 +631,46 @@ func (m Model) renderFooter() string {
 		left = fmt.Sprintf("  %d live · %d offline", live, offline)
 	}
 
-	// Right side.
-	parts := []string{
-		hint("Enter", "play"),
-		hint("i", "quality"),
-		hint("f", "fav"),
-		hint("x", "ignore"),
-		hint("r", "related"),
-		hint("t", "theme"),
+	// All bindings are always shown. When the full labels don't fit, the
+	// footer collapses to keys-only and the `? help` hint reminds the user
+	// that the overlay is one keystroke away.
+	type kv struct{ key, desc string }
+	hints := []kv{
+		{"Enter", "play"},
+		{"i", "quality"},
+		{"f", "fav"},
+		{"x", "ignore"},
 	}
-	// Only hint the chat toggle when it's actionable: there are live sessions
-	// but the pane is hidden. Inside the pane the "C hide" hint is already
-	// shown by renderChatHeader.
 	if len(m.chatSessions) > 0 && !m.chatVisible {
-		parts = append(parts, hint("C", "chat"))
+		hints = append(hints, kv{"C", "chat"})
 	}
-	right := strings.Join(parts, dot) + "  "
+	hints = append(hints, kv{"r", "related"}, kv{"t", "theme"}, kv{"?", "help"})
+
+	const (
+		minGap  = 2
+		tailPad = 2
+	)
+	budget := (m.width - 2) - uniseg.StringWidth(stripANSI(left)) - minGap - tailPad
+
+	buildRight := func(withDesc bool) string {
+		parts := make([]string, 0, len(hints))
+		for _, h := range hints {
+			if withDesc {
+				parts = append(parts, hint(h.key, h.desc))
+			} else {
+				parts = append(parts, m.styles.title.Render(h.key))
+			}
+		}
+		return strings.Join(parts, dot)
+	}
+
+	right := buildRight(true)
+	if uniseg.StringWidth(stripANSI(right)) > budget {
+		right = buildRight(false)
+	}
+	if right != "" {
+		right += "  "
+	}
 
 	return joinLeftRight(left, right, m.width-2)
 }
