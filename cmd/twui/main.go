@@ -397,32 +397,33 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				notice(fmt.Sprintf("%s unavailable — using %s", requested, q))
 			}
 
-			// Twitch redeclares the same ad break on every playlist refresh,
-			// so raw OnAdBreak / OnAdEnd callbacks fire many times across
-			// a single real event. Collapse them into one "Ad break" at
-			// the start of the bypass cycle and one "Ad break ended" once
-			// no new detection has arrived for adEndDebounce.
+			// Twitch redeclares the same ad break on every playlist refresh
+			// and a single "real" ad break is usually a cluster of spots
+			// with 1-3 minutes of content between them. Two independent
+			// debounce windows give the right UX + resource tradeoff:
 			//
-			// Debounce needs to be long enough to bridge across content
-			// gaps between short consecutive ads (Twitch sometimes runs
-			// 30s spots back-to-back with 20-30s of content in between).
-			// Too short and the user sees a start/end notification for
-			// each spot; too long and a real ad-finished event is delayed.
+			// - pumpStopDebounce is short: once detections have been
+			//   quiet this long, stop the bypass pump so we're not
+			//   hammering Twitch with token requests during normal
+			//   content. Restarts automatically if a new ad fires.
+			// - adEndDebounce is long: only declare the break "ended"
+			//   (user-visible notification) once we've been quiet long
+			//   enough to be confident it's a real return to streaming,
+			//   not just content between spots in the same cluster.
 			//
 			// bypassPumpInterval is how often we retry BypassAdBreak while
-			// in an ad break — faster than the ~2-4s playlist refresh so
-			// we sample more Twitch sessions per second, each of which
-			// might happen to have content at its live edge while the
-			// current one doesn't. The bypass's single-flight guard drops
-			// ticks that collide with an already-running fetch, so this
-			// doesn't stack up overlapping requests.
-			const adEndDebounce = 60 * time.Second
+			// the pump is running — faster than the ~2-4s playlist refresh
+			// so we sample more Twitch sessions per second. Single-flight
+			// drops ticks that collide with an already-running fetch.
+			const adEndDebounce = 5 * time.Minute
+			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
 			var (
-				adNotifyMu sync.Mutex
-				inAdBreak  bool
-				endTimer   *time.Timer
-				pumpStop   chan struct{}
+				adNotifyMu     sync.Mutex
+				inAdBreak      bool
+				notifyEndTimer *time.Timer
+				pumpStopTimer  *time.Timer
+				pumpStop       chan struct{}
 			)
 
 			bypasser, _ := s.(stream.AdBypasser)
@@ -450,17 +451,17 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					adNotifyMu.Lock()
 					firstOfBreak := !inAdBreak
 					inAdBreak = true
-					if endTimer != nil {
-						endTimer.Stop()
+
+					// Short-debounce timer: stops the bypass pump when
+					// detections have been quiet for pumpStopDebounce, to
+					// stop cycling tokens during plain content. Gets
+					// reset on every OnAdBreak; a new detection after the
+					// pump already stopped will restart it below.
+					if pumpStopTimer != nil {
+						pumpStopTimer.Stop()
 					}
-					endTimer = time.AfterFunc(adEndDebounce, func() {
-						// Mark the break over and close the pump's stop
-						// channel. The pump goroutine is responsible for
-						// firing the "Ad break ended" notification in its
-						// deferred cleanup so the pair of notifications
-						// is tied strictly to the pump's lifecycle.
+					pumpStopTimer = time.AfterFunc(pumpStopDebounce, func() {
 						adNotifyMu.Lock()
-						inAdBreak = false
 						stop := pumpStop
 						pumpStop = nil
 						adNotifyMu.Unlock()
@@ -468,30 +469,53 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 							close(stop)
 						}
 					})
-					// Start the bypass pump if this is the first detection
-					// of the current ad break. The pump owns both the
-					// start and end notifications via its entry call and
-					// deferred cleanup — exactly one pair per continuous
-					// pump run, regardless of how detections cluster.
+
+					// Long-debounce timer: fires the "Ad break ended"
+					// notification once we've been quiet long enough to
+					// be confident the whole cluster of spots is over,
+					// not just the content window between two midrolls
+					// in the same block.
+					if notifyEndTimer != nil {
+						notifyEndTimer.Stop()
+					}
+					notifyEndTimer = time.AfterFunc(adEndDebounce, func() {
+						adNotifyMu.Lock()
+						wasIn := inAdBreak
+						inAdBreak = false
+						adNotifyMu.Unlock()
+						// Skip the notification if the stream has been
+						// torn down — the user already left.
+						select {
+						case <-c.Done():
+							return
+						default:
+						}
+						if wasIn {
+							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+						}
+					})
+
+					// Start the pump if it isn't already running. The
+					// condition is `pumpStop == nil` (pump stopped) rather
+					// than firstOfBreak, so a later midroll in the same
+					// cluster restarts the pump after a long content gap.
 					var startPump bool
 					var localStopCh chan struct{}
-					if firstOfBreak && bypasser != nil {
+					if pumpStop == nil && bypasser != nil {
 						pumpStop = make(chan struct{})
 						localStopCh = pumpStop
 						startPump = true
 					}
 					adNotifyMu.Unlock()
 
-					if startPump {
-						go func(stopCh chan struct{}, adType string) {
-							notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
-							defer notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+					// "Ad break" notification: exactly once per real
+					// cluster (while inAdBreak held across pump restarts).
+					if firstOfBreak {
+						notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
+					}
 
-							// Fire once immediately on first detection,
-							// then on the ticker. The HLS worker thread
-							// that fired this callback isn't blocked on
-							// the token+playlist fetch since runBypass
-							// runs in this goroutine.
+					if startPump {
+						go func(stopCh chan struct{}) {
 							runBypass()
 							ticker := time.NewTicker(bypassPumpInterval)
 							defer ticker.Stop()
@@ -505,7 +529,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 									runBypass()
 								}
 							}
-						}(localStopCh, adType)
+						}(localStopCh)
 					}
 				})
 			}
