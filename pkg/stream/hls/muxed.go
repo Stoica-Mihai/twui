@@ -7,40 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/mcs/twui/pkg/stream"
 )
-
-// contextOpenFile opens a file in a goroutine and selects on context
-// cancellation or a 30-second timeout, preventing indefinite blocking
-// when the other end of a named pipe never opens.
-func contextOpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (*os.File, error) {
-	type result struct {
-		f   *os.File
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		f, err := os.OpenFile(path, flag, perm)
-		ch <- result{f, err}
-	}()
-
-	timeout := time.NewTimer(30 * time.Second)
-	defer timeout.Stop()
-
-	select {
-	case r := <-ch:
-		return r.f, r.err
-	case <-timeout.C:
-		return nil, fmt.Errorf("timed out opening pipe %s after 30s", path)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
 
 // MuxedHLSStream combines separate video and audio HLS streams into a single
 // muxed MPEG-TS output using FFmpeg and named pipes.
@@ -82,20 +52,12 @@ func (m *MuxedHLSStream) Open() (io.ReadCloser, error) {
 		return nil, fmt.Errorf("muxed hls: create temp dir: %w", err)
 	}
 
-	videoPipe := filepath.Join(tmpDir, "video.pipe")
-	audioPipe := filepath.Join(tmpDir, "audio.pipe")
-
-	if err := syscall.Mkfifo(videoPipe, 0600); err != nil {
+	videoPipe, audioPipe, err := stream.CreatePipePair(tmpDir)
+	if err != nil {
 		videoReader.Close()
 		audioReader.Close()
 		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("muxed hls: mkfifo video: %w", err)
-	}
-	if err := syscall.Mkfifo(audioPipe, 0600); err != nil {
-		videoReader.Close()
-		audioReader.Close()
-		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("muxed hls: mkfifo audio: %w", err)
+		return nil, fmt.Errorf("muxed hls: %w", err)
 	}
 
 	// Launch FFmpeg
@@ -135,7 +97,7 @@ func (m *MuxedHLSStream) Open() (io.ReadCloser, error) {
 	// Goroutine: copy video to named pipe
 	go func() {
 		defer wg.Done()
-		f, err := contextOpenFile(openCtx, videoPipe, os.O_WRONLY, 0)
+		f, err := stream.OpenPipeWithTimeout(openCtx, videoPipe, os.O_WRONLY, 0)
 		if err != nil {
 			slog.Error("Failed to open video pipe", "err", err)
 			return
@@ -150,7 +112,7 @@ func (m *MuxedHLSStream) Open() (io.ReadCloser, error) {
 	// Goroutine: copy audio to named pipe
 	go func() {
 		defer wg.Done()
-		f, err := contextOpenFile(openCtx, audioPipe, os.O_WRONLY, 0)
+		f, err := stream.OpenPipeWithTimeout(openCtx, audioPipe, os.O_WRONLY, 0)
 		if err != nil {
 			slog.Error("Failed to open audio pipe", "err", err)
 			return

@@ -65,30 +65,31 @@ func ParseMaster(data string, baseURL string) (*MasterPlaylist, error) {
 		}
 
 		if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
-			attrs := line[len("#EXT-X-STREAM-INF:"):]
-			v := Variant{}
-			v.Bandwidth = attrInt(attrs, "BANDWIDTH")
-			v.Resolution = attrString(attrs, "RESOLUTION")
-			v.FrameRate = attrFloat(attrs, "FRAME-RATE")
-			v.Codecs = attrQuoted(attrs, "CODECS")
-			v.Video = attrQuoted(attrs, "VIDEO")
-			v.Audio = attrQuoted(attrs, "AUDIO")
-			v.Name = attrQuoted(attrs, "NAME")
+			a := parseAttrList(line[len("#EXT-X-STREAM-INF:"):])
+			v := Variant{
+				Bandwidth:  a.Int("BANDWIDTH"),
+				Resolution: a.Get("RESOLUTION"),
+				FrameRate:  a.Float("FRAME-RATE"),
+				Codecs:     a.Get("CODECS"),
+				Video:      a.Get("VIDEO"),
+				Audio:      a.Get("AUDIO"),
+				Name:       a.Get("NAME"),
+			}
 			if v.Name == "" {
-				v.Name = attrQuoted(attrs, "IVS-NAME")
+				v.Name = a.Get("IVS-NAME")
 			}
 			pendingVariant = &v
 			continue
 		}
 
 		if strings.HasPrefix(line, "#EXT-X-MEDIA:") {
-			attrs := line[len("#EXT-X-MEDIA:"):]
+			a := parseAttrList(line[len("#EXT-X-MEDIA:"):])
 			m := Media{
-				Type:    attrQuoted(attrs, "TYPE"),
-				GroupID: attrQuoted(attrs, "GROUP-ID"),
-				Name:    attrQuoted(attrs, "NAME"),
-				Default: strings.EqualFold(attrString(attrs, "DEFAULT"), "YES"),
-				URI:     attrQuoted(attrs, "URI"),
+				Type:    a.Get("TYPE"),
+				GroupID: a.Get("GROUP-ID"),
+				Name:    a.Get("NAME"),
+				Default: strings.EqualFold(a.Get("DEFAULT"), "YES"),
+				URI:     a.Get("URI"),
 			}
 			if m.URI != "" {
 				m.URI = resolveURL(baseURL, m.URI)
@@ -200,16 +201,16 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			hasDuration = true
 
 		case strings.HasPrefix(line, "#EXT-X-KEY:"):
-			attrs := line[len("#EXT-X-KEY:"):]
-			method := attrString(attrs, "METHOD")
+			a := parseAttrList(line[len("#EXT-X-KEY:"):])
+			method := a.Get("METHOD")
 			if strings.EqualFold(method, "NONE") {
 				currentKey = nil
 			} else {
 				k := &Key{
 					Method: method,
-					URI:    resolveURL(baseURL, attrQuoted(attrs, "URI")),
+					URI:    resolveURL(baseURL, a.Get("URI")),
 				}
-				ivStr := attrString(attrs, "IV")
+				ivStr := a.Get("IV")
 				if ivStr != "" {
 					rawIV := ivStr
 					ivStr = strings.TrimPrefix(ivStr, "0x")
@@ -224,12 +225,11 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			}
 
 		case strings.HasPrefix(line, "#EXT-X-MAP:"):
-			attrs := line[len("#EXT-X-MAP:"):]
+			a := parseAttrList(line[len("#EXT-X-MAP:"):])
 			m := &MapEntry{
-				URI: resolveURL(baseURL, attrQuoted(attrs, "URI")),
+				URI: resolveURL(baseURL, a.Get("URI")),
 			}
-			brStr := attrQuoted(attrs, "BYTERANGE")
-			if brStr != "" {
+			if brStr := a.Get("BYTERANGE"); brStr != "" {
 				m.ByteRange = parseByteRange(brStr)
 			}
 			playlist.Map = m
@@ -251,31 +251,21 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			currentDate = t
 
 		case strings.HasPrefix(line, "#EXT-X-DATERANGE:"):
-			attrs := line[len("#EXT-X-DATERANGE:"):]
+			a := parseAttrList(line[len("#EXT-X-DATERANGE:"):])
 			dr := DateRange{
-				ID:    attrQuoted(attrs, "ID"),
-				Class: attrQuoted(attrs, "CLASS"),
+				ID:    a.Get("ID"),
+				Class: a.Get("CLASS"),
 			}
-			startStr := attrQuoted(attrs, "START-DATE")
-			if startStr != "" {
+			if startStr := a.Get("START-DATE"); startStr != "" {
 				dr.Start, _ = time.Parse(time.RFC3339Nano, startStr)
 			}
-			endStr := attrQuoted(attrs, "END-DATE")
-			if endStr != "" {
+			if endStr := a.Get("END-DATE"); endStr != "" {
 				dr.End, _ = time.Parse(time.RFC3339Nano, endStr)
 			}
-			durStr := attrString(attrs, "DURATION")
-			if durStr != "" {
-				dr.Duration, _ = strconv.ParseFloat(durStr, 64)
-			}
-			plannedStr := attrString(attrs, "PLANNED-DURATION")
-			if plannedStr != "" {
-				dr.PlannedDuration, _ = strconv.ParseFloat(plannedStr, 64)
-			}
-			dr.EndOnNext = strings.EqualFold(attrString(attrs, "END-ON-NEXT"), "YES")
-
-			// Parse X-prefixed attributes
-			dr.X = parseXAttributes(attrs)
+			dr.Duration = a.Float("DURATION")
+			dr.PlannedDuration = a.Float("PLANNED-DURATION")
+			dr.EndOnNext = strings.EqualFold(a.Get("END-ON-NEXT"), "YES")
+			dr.X = a.XAttrs()
 
 			playlist.DateRanges = append(playlist.DateRanges, dr)
 
@@ -403,136 +393,86 @@ func parseByteRange(s string) *ByteRange {
 	return br
 }
 
-// attrString extracts an unquoted attribute value from an HLS attribute list.
-func attrString(attrs, name string) string {
-	key := name + "="
-	idx := findAttr(attrs, key)
-	if idx < 0 {
-		return ""
+// attrList is a parsed HLS attribute list. Values have their enclosing
+// quotes stripped; callers treat all accessors uniformly regardless of
+// whether the original grammar was quoted or unquoted.
+type attrList map[string]string
+
+// parseAttrList splits an HLS attribute list (the portion after `#TAG:`)
+// into a map of attribute name → value. Each attribute is scanned once;
+// this replaces repeated per-accessor substring searches that previously
+// scaled O(attrs × accessors) per tag.
+func parseAttrList(s string) attrList {
+	out := make(attrList)
+	i := 0
+	for i < len(s) {
+		for i < len(s) && (s[i] == ' ' || s[i] == ',') {
+			i++
+		}
+		keyStart := i
+		for i < len(s) && s[i] != '=' {
+			i++
+		}
+		if i >= len(s) || i == keyStart {
+			break
+		}
+		key := s[keyStart:i]
+		i++ // consume '='
+		if i >= len(s) {
+			out[key] = ""
+			break
+		}
+		if s[i] == '"' {
+			i++
+			vStart := i
+			for i < len(s) && s[i] != '"' {
+				i++
+			}
+			out[key] = s[vStart:i]
+			if i < len(s) {
+				i++ // consume closing quote
+			}
+		} else {
+			vStart := i
+			for i < len(s) && s[i] != ',' {
+				i++
+			}
+			out[key] = strings.TrimSpace(s[vStart:i])
+		}
 	}
-	rest := attrs[idx+len(key):]
-	if len(rest) > 0 && rest[0] == '"' {
-		// Quoted value — use attrQuoted instead
-		return attrQuoted(attrs, name)
-	}
-	end := strings.IndexByte(rest, ',')
-	if end < 0 {
-		return strings.TrimSpace(rest)
-	}
-	return strings.TrimSpace(rest[:end])
+	return out
 }
 
-// attrQuoted extracts a quoted attribute value from an HLS attribute list.
-func attrQuoted(attrs, name string) string {
-	key := name + "=\""
-	idx := findAttr(attrs, key)
-	if idx < 0 {
-		return ""
-	}
-	rest := attrs[idx+len(key):]
-	end := strings.IndexByte(rest, '"')
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
-}
+// Get returns the value for name, or "" if absent.
+func (a attrList) Get(name string) string { return a[name] }
 
-// attrInt extracts an integer attribute value from an HLS attribute list.
-func attrInt(attrs, name string) int {
-	s := attrString(attrs, name)
-	if s == "" {
+// Int returns the value parsed as an integer, or 0 on absence or parse error.
+func (a attrList) Int(name string) int {
+	s, ok := a[name]
+	if !ok || s == "" {
 		return 0
 	}
 	v, _ := strconv.Atoi(s)
 	return v
 }
 
-// attrFloat extracts a float attribute value from an HLS attribute list.
-func attrFloat(attrs, name string) float64 {
-	s := attrString(attrs, name)
-	if s == "" {
+// Float returns the value parsed as a float64, or 0 on absence or parse error.
+func (a attrList) Float(name string) float64 {
+	s, ok := a[name]
+	if !ok || s == "" {
 		return 0
 	}
 	v, _ := strconv.ParseFloat(s, 64)
 	return v
 }
 
-// findAttr finds the position of an attribute key in the attribute string,
-// ensuring it is at the start or preceded by a comma/space.
-func findAttr(attrs, key string) int {
-	pos := 0
-	for {
-		idx := strings.Index(attrs[pos:], key)
-		if idx < 0 {
-			return -1
-		}
-		absIdx := pos + idx
-		if absIdx == 0 {
-			return absIdx
-		}
-		prev := attrs[absIdx-1]
-		if prev == ',' || prev == ' ' {
-			return absIdx
-		}
-		pos = absIdx + 1
-	}
-}
-
-// parseXAttributes extracts all X-prefixed attributes from an attribute string.
-func parseXAttributes(attrs string) map[string]string {
-	result := map[string]string{}
-	// Scan for X- prefixed attributes
-	pos := 0
-	for pos < len(attrs) {
-		// Find next X- key
-		idx := strings.Index(attrs[pos:], "X-")
-		if idx < 0 {
-			break
-		}
-		absIdx := pos + idx
-		// Ensure it's at start or after comma/space
-		if absIdx > 0 {
-			prev := attrs[absIdx-1]
-			if prev != ',' && prev != ' ' {
-				pos = absIdx + 1
-				continue
-			}
-		}
-		// Find the = sign
-		eqIdx := strings.IndexByte(attrs[absIdx:], '=')
-		if eqIdx < 0 {
-			break
-		}
-		key := attrs[absIdx : absIdx+eqIdx]
-		valStart := absIdx + eqIdx + 1
-		if valStart >= len(attrs) {
-			break
-		}
-		var val string
-		if attrs[valStart] == '"' {
-			// Quoted value
-			endQuote := strings.IndexByte(attrs[valStart+1:], '"')
-			if endQuote < 0 {
-				break
-			}
-			val = attrs[valStart+1 : valStart+1+endQuote]
-			pos = valStart + 1 + endQuote + 1
-		} else {
-			// Unquoted value
-			endComma := strings.IndexByte(attrs[valStart:], ',')
-			if endComma < 0 {
-				val = strings.TrimSpace(attrs[valStart:])
-				pos = len(attrs)
-			} else {
-				val = strings.TrimSpace(attrs[valStart : valStart+endComma])
-				pos = valStart + endComma + 1
-			}
-		}
-		// Skip standard attributes that happen to start with uppercase
-		// Only include truly custom X- attributes
-		if strings.HasPrefix(key, "X-") {
-			result[key] = val
+// XAttrs returns all X-prefixed attributes (custom client namespace).
+func (a attrList) XAttrs() map[string]string {
+	out := map[string]string{}
+	for k, v := range a {
+		if strings.HasPrefix(k, "X-") {
+			out[k] = v
 		}
 	}
-	return result
+	return out
 }

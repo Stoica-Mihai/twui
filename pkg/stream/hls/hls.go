@@ -17,13 +17,18 @@ import (
 )
 
 const (
-	defaultLiveEdge        = 4
-	defaultMaxAttempts     = 3
-	liveSegmentChanSize    = 16
-	playlistRetryBaseDelay = 1 * time.Second
-	segmentRetryBaseDelay  = 1 * time.Second
-	maxKeyCacheSize        = 32
-	maxSegmentSize         = 100 * 1024 * 1024 // 100 MB
+	defaultLiveEdge     = 4
+	defaultMaxAttempts  = 3
+	liveSegmentChanSize = 16
+	baseRetryDelay      = 1 * time.Second
+	maxKeyCacheSize     = 32
+	// maxPlaylistBytes caps the body size for playlists and map/init
+	// segments — neither should exceed a few hundred KB in practice.
+	maxPlaylistBytes = 10 * 1024 * 1024 // 10 MB
+	// maxEncryptedSegmentBytes caps the in-memory buffer used for
+	// encrypted segments (which must be fully read before CBC decryption).
+	// Unencrypted segments stream directly and are not bounded here.
+	maxEncryptedSegmentBytes = 100 * 1024 * 1024 // 100 MB
 )
 
 // retryDelay computes the delay before the next retry attempt. If retryAfterHeader
@@ -294,26 +299,31 @@ func (h *HLSStream) applyFirstLoad(segments []Segment, playlist *MediaPlaylist) 
 	return segments
 }
 
-// fetchPlaylist fetches and parses the playlist with retries.
-func (h *HLSStream) fetchPlaylist(ctx context.Context) (*MediaPlaylist, error) {
-	maxAttempts := h.MaxPlaylistAttempts
-	if maxAttempts == 0 {
-		maxAttempts = defaultMaxAttempts
-	}
+// fetchWithRetry runs buildReq/handleBody inside a retry loop with jittered
+// backoff, Retry-After honoring on HTTP 429, and context cancellation.
+// The wrapper closes the response body after handleBody returns. Status-code
+// errors and 429s do not call handleBody; non-2xx statuses become retryable
+// errors, and handler errors retry unless the context has died.
+func (h *HLSStream) fetchWithRetry(
+	ctx context.Context,
+	maxAttempts int,
+	buildReq func(context.Context) (*http.Request, error),
+	handleBody func(*http.Response) error,
+) error {
 	var lastErr error
 	var retryAfterHeader string
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			delay := retryDelay(attempt-1, playlistRetryBaseDelay, retryAfterHeader)
-			retryAfterHeader = "" // reset for next iteration
+			delay := retryDelay(attempt-1, baseRetryDelay, retryAfterHeader)
+			retryAfterHeader = ""
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return ctx.Err()
 			}
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.StreamURL, nil)
+		req, err := buildReq(ctx)
 		if err != nil {
 			lastErr = err
 			continue
@@ -322,17 +332,7 @@ func (h *HLSStream) fetchPlaylist(ctx context.Context) (*MediaPlaylist, error) {
 		resp, err := h.Client.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			lastErr = err
-			continue
-		}
-
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-		resp.Body.Close()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return ctx.Err()
 			}
 			lastErr = err
 			continue
@@ -340,24 +340,58 @@ func (h *HLSStream) fetchPlaylist(ctx context.Context) (*MediaPlaylist, error) {
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			retryAfterHeader = resp.Header.Get("Retry-After")
-			lastErr = fmt.Errorf("hls: playlist HTTP 429")
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP 429")
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("hls: playlist HTTP %d", resp.StatusCode)
-			continue
+		err = handleBody(resp)
+		resp.Body.Close()
+		if err == nil {
+			return nil
 		}
-
-		playlist, err := ParseMedia(string(body), h.StreamURL)
-		if err != nil {
-			lastErr = err
-			continue
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-
-		return playlist, nil
+		lastErr = err
 	}
-	return nil, fmt.Errorf("hls: fetch playlist: %w", lastErr)
+	return lastErr
+}
+
+// fetchPlaylist fetches and parses the playlist with retries.
+func (h *HLSStream) fetchPlaylist(ctx context.Context) (*MediaPlaylist, error) {
+	maxAttempts := h.MaxPlaylistAttempts
+	if maxAttempts == 0 {
+		maxAttempts = defaultMaxAttempts
+	}
+
+	var playlist *MediaPlaylist
+	err := h.fetchWithRetry(ctx, maxAttempts,
+		func(ctx context.Context) (*http.Request, error) {
+			return http.NewRequestWithContext(ctx, http.MethodGet, h.StreamURL, nil)
+		},
+		func(resp *http.Response) error {
+			body, err := io.ReadAll(io.LimitReader(resp.Body, maxPlaylistBytes))
+			if err != nil {
+				return err
+			}
+			pl, err := ParseMedia(string(body), h.StreamURL)
+			if err != nil {
+				return err
+			}
+			playlist = pl
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("hls: fetch playlist: %w", err)
+	}
+	return playlist, nil
 }
 
 // sleepReload waits for the appropriate reload interval before refetching.
@@ -422,59 +456,32 @@ func (h *HLSStream) fetchAndWriteMap(ctx context.Context, m *MapEntry, pw *io.Pi
 	if maxAttempts == 0 {
 		maxAttempts = defaultMaxAttempts
 	}
-	var lastErr error
-	var retryAfterHeader string
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 {
-			delay := retryDelay(attempt-1, segmentRetryBaseDelay, retryAfterHeader)
-			retryAfterHeader = ""
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return ctx.Err()
+
+	err := h.fetchWithRetry(ctx, maxAttempts,
+		func(ctx context.Context) (*http.Request, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.URI, nil)
+			if err != nil {
+				return nil, err
 			}
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.URI, nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if m.ByteRange != nil {
-			end := m.ByteRange.Offset + m.ByteRange.Length - 1
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", m.ByteRange.Offset, end))
-		}
-
-		resp, err := h.Client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		if resp.StatusCode == http.StatusTooManyRequests {
-			retryAfterHeader = resp.Header.Get("Retry-After")
-			resp.Body.Close()
-			lastErr = fmt.Errorf("hls: map HTTP 429")
-			continue
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("hls: map HTTP %d", resp.StatusCode)
-			continue
-		}
-
-		data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		_, err = pw.Write(data)
-		return err
+			if m.ByteRange != nil {
+				end := m.ByteRange.Offset + m.ByteRange.Length - 1
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", m.ByteRange.Offset, end))
+			}
+			return req, nil
+		},
+		func(resp *http.Response) error {
+			data, err := io.ReadAll(io.LimitReader(resp.Body, maxPlaylistBytes))
+			if err != nil {
+				return err
+			}
+			_, err = pw.Write(data)
+			return err
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("hls: fetch map: %w", err)
 	}
-	return fmt.Errorf("hls: fetch map: %w", lastErr)
+	return nil
 }
 
 // fetchAndDiscard fetches a segment and discards the response body.
@@ -507,84 +514,46 @@ func (h *HLSStream) fetchAndWriteSegment(
 	if maxAttempts == 0 {
 		maxAttempts = defaultMaxAttempts
 	}
-	var lastErr error
-	var retryAfterHeader string
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 {
-			delay := retryDelay(attempt-1, segmentRetryBaseDelay, retryAfterHeader)
-			retryAfterHeader = ""
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, seg.URL, nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if seg.ByteRange != nil {
-			end := seg.ByteRange.Offset + seg.ByteRange.Length - 1
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", seg.ByteRange.Offset, end))
-		}
-
-		resp, err := h.Client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		if resp.StatusCode == http.StatusTooManyRequests {
-			retryAfterHeader = resp.Header.Get("Retry-After")
-			resp.Body.Close()
-			lastErr = fmt.Errorf("hls: segment HTTP 429")
-			continue
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("hls: segment HTTP %d", resp.StatusCode)
-			continue
-		}
-
-		if seg.Key == nil {
-			// No encryption: stream directly from response to pipe.
-			_, err = io.Copy(pw, resp.Body)
-			resp.Body.Close()
+	err := h.fetchWithRetry(ctx, maxAttempts,
+		func(ctx context.Context) (*http.Request, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, seg.URL, nil)
 			if err != nil {
-				lastErr = err
-				continue
+				return nil, err
 			}
-			return nil
-		}
-
-		data, err := io.ReadAll(io.LimitReader(resp.Body, maxSegmentSize))
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		// Decrypt if needed
-		if seg.Key.Method == "AES-128" {
-			key, err := h.getKey(ctx, seg.Key.URI, kc)
+			if seg.ByteRange != nil {
+				end := seg.ByteRange.Offset + seg.ByteRange.Length - 1
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", seg.ByteRange.Offset, end))
+			}
+			return req, nil
+		},
+		func(resp *http.Response) error {
+			if seg.Key == nil {
+				_, err := io.Copy(pw, resp.Body)
+				return err
+			}
+			data, err := io.ReadAll(io.LimitReader(resp.Body, maxEncryptedSegmentBytes))
 			if err != nil {
-				lastErr = fmt.Errorf("hls: fetch key: %w", err)
-				continue
+				return err
 			}
-			data, err = decryptAES128CBC(data, key, seg.Key.IV)
-			if err != nil {
-				lastErr = fmt.Errorf("hls: decrypt: %w", err)
-				continue
+			if seg.Key.Method == "AES-128" {
+				key, err := h.getKey(ctx, seg.Key.URI, kc)
+				if err != nil {
+					return fmt.Errorf("fetch key: %w", err)
+				}
+				data, err = decryptAES128CBC(data, key, seg.Key.IV)
+				if err != nil {
+					return fmt.Errorf("decrypt: %w", err)
+				}
 			}
-		}
-
-		_, err = pw.Write(data)
-		return err
+			_, err = pw.Write(data)
+			return err
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("hls: fetch segment %d: %w", seg.Num, err)
 	}
-	return fmt.Errorf("hls: fetch segment %d: %w", seg.Num, lastErr)
+	return nil
 }
 
 // getKey fetches an AES-128 key, caching by URI. The cache is bounded;

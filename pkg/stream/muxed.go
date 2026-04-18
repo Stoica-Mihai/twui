@@ -7,9 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -38,16 +36,10 @@ func (m *MuxedStream) Open() (io.ReadCloser, error) {
 		return nil, fmt.Errorf("muxed: failed to create temp directory: %w", err)
 	}
 
-	videoPipe := filepath.Join(tmpDir, "video.pipe")
-	audioPipe := filepath.Join(tmpDir, "audio.pipe")
-
-	if err := syscall.Mkfifo(videoPipe, 0600); err != nil {
+	videoPipe, audioPipe, err := CreatePipePair(tmpDir)
+	if err != nil {
 		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("muxed: failed to create video pipe: %w", err)
-	}
-	if err := syscall.Mkfifo(audioPipe, 0600); err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("muxed: failed to create audio pipe: %w", err)
+		return nil, fmt.Errorf("muxed: %w", err)
 	}
 
 	videoReader, err := m.Video.Open()
@@ -136,7 +128,7 @@ func (m *MuxedStream) Open() (io.ReadCloser, error) {
 	// Feed video stream into the video named pipe.
 	go func() {
 		defer wg.Done()
-		f, err := contextOpenFile(ctx, videoPipe, os.O_WRONLY, 0)
+		f, err := OpenPipeWithTimeout(ctx, videoPipe, os.O_WRONLY, 0)
 		if err != nil {
 			slog.Error("Failed to open video pipe", "err", err)
 			select {
@@ -158,7 +150,7 @@ func (m *MuxedStream) Open() (io.ReadCloser, error) {
 	// Feed audio stream into the audio named pipe.
 	go func() {
 		defer wg.Done()
-		f, err := contextOpenFile(ctx, audioPipe, os.O_WRONLY, 0)
+		f, err := OpenPipeWithTimeout(ctx, audioPipe, os.O_WRONLY, 0)
 		if err != nil {
 			slog.Error("Failed to open audio pipe", "err", err)
 			select {
@@ -182,47 +174,6 @@ func (m *MuxedStream) Open() (io.ReadCloser, error) {
 
 func (m *MuxedStream) URL() string {
 	return fmt.Sprintf("muxed(%s, %s)", m.Video.URL(), m.Audio.URL())
-}
-
-// contextOpenFile opens a file in a goroutine and selects on context
-// cancellation or a 30-second timeout, preventing indefinite blocking
-// when the other end of a named pipe never opens.
-func contextOpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (*os.File, error) {
-	type result struct {
-		f   *os.File
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		f, err := os.OpenFile(path, flag, perm)
-		ch <- result{f, err}
-	}()
-
-	timeout := time.NewTimer(30 * time.Second)
-	defer timeout.Stop()
-
-	select {
-	case r := <-ch:
-		return r.f, r.err
-	case <-timeout.C:
-		// Unblock the inner goroutine stuck on os.OpenFile by opening the
-		// read end of the FIFO. Removing the file does not unblock it.
-		go func() {
-			f, err := os.Open(path)
-			if err == nil {
-				f.Close()
-			}
-		}()
-		return nil, fmt.Errorf("timed out opening pipe %s after 30s", path)
-	case <-ctx.Done():
-		go func() {
-			f, err := os.Open(path)
-			if err == nil {
-				f.Close()
-			}
-		}()
-		return nil, ctx.Err()
-	}
 }
 
 type muxedReadCloser struct {
