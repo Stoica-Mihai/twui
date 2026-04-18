@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -33,7 +34,7 @@ func NewCacheAt(path string) (*Cache, error) {
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return c, nil
 		}
 		return nil, fmt.Errorf("cache: read %s: %w", path, err)
@@ -58,25 +59,23 @@ func NewCache() (*Cache, error) {
 
 // Get deserializes the cached value for key into dst. It returns false
 // when the key does not exist or has expired. Expired entries are removed
-// automatically. Safe to call on a nil Cache.
+// automatically; the removal is not persisted — the next Set or Delete
+// flushes it. Safe to call on a nil Cache.
 func (c *Cache) Get(key string, dst any) bool {
 	if c == nil {
 		return false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	c.mu.RLock()
 	entry, ok := c.data[key]
+	c.mu.RUnlock()
 	if !ok {
 		return false
 	}
 
 	if entry.Expires != nil && time.Now().After(*entry.Expires) {
+		c.mu.Lock()
 		delete(c.data, key)
-		// Best-effort persist the cleanup.
-		if err := c.saveLocked(); err != nil {
-			slog.Warn("Cache write failed", "err", err)
-		}
+		c.mu.Unlock()
 		return false
 	}
 

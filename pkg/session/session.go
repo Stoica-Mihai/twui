@@ -28,11 +28,13 @@ func New() *Session {
 		}).DialContext,
 		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConns:        100,
+		// Default is 2, which causes connection churn when several goroutines
+		// hit the same Twitch host concurrently (e.g. streaming favorites).
+		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 	}
 
 	options := NewOptions()
-	options.SetDefault("http-timeout", defaultTimeout)
 	options.SetDefault("http-user-agent", defaultUserAgent)
 
 	cache, _ := NewCache()
