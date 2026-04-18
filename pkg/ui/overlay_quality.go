@@ -3,24 +3,15 @@ package ui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
 
 func (m Model) renderQualityOverlay() string {
 	title := fmt.Sprintf(" Quality — %s ", m.overlayChannel)
-	w := overlayWidth(title, 0)
-	lines := m.overlayHeader(title, w)
-	for i, q := range m.overlayList {
-		row := fmt.Sprintf("  %-*s  ", w-4, q)
-		if i == m.overlayCursor {
-			row = m.styles.selected.Render(row)
-		}
-		lines = append(lines, m.overlayRow(row))
-	}
-	lines = append(lines, m.overlayFooter(w))
-	return strings.Join(lines, "\n")
+	return m.renderListOverlay(title, 0, len(m.overlayList), m.overlayCursor, func(i int) string {
+		return m.overlayList[i]
+	})
 }
 
 // handleQualityKey handles key presses while the quality overlay is open.

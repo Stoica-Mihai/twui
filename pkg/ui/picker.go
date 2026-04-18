@@ -903,6 +903,13 @@ func (m Model) moveCursor(delta int) Model {
 	if m.cursor >= n {
 		m.cursor = n - 1
 	}
+	return m.resetTitleScroll()
+}
+
+// resetTitleScroll rewinds the row-title marquee to its starting position.
+// Called by every cursor-moving handler so a new row's title starts scrolling
+// from the beginning rather than mid-sweep.
+func (m Model) resetTitleScroll() Model {
 	m.titleScrollOffset = 0
 	m.titleScrollDir = 1
 	return m

@@ -154,18 +154,44 @@ type pickerStyles struct {
 	favorite     lipgloss.Style
 }
 
+// fgOrDefault returns a foreground-only style using hex when non-empty,
+// otherwise the given ANSI palette number. Used for the common theme-field
+// pattern: "apply the user's hex override, else fall back to an ANSI color."
+func fgOrDefault(hex, defaultANSI string) lipgloss.Style {
+	c := hex
+	if c == "" {
+		c = defaultANSI
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(c))
+}
+
+// fgOrPlain returns a foreground-only style using hex when non-empty,
+// otherwise an unstyled passthrough (no color escapes emitted). Used for
+// border/text where the default is "do nothing," not a fallback color.
+func fgOrPlain(hex string) lipgloss.Style {
+	if hex == "" {
+		return lipgloss.NewStyle()
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(hex))
+}
+
 // buildStyles creates Lipgloss styles from a Theme.
 func buildStyles(t Theme) pickerStyles {
 	if t.Monochrome {
 		return buildMonochromeStyles()
 	}
 
-	ps := pickerStyles{}
-
-	if t.Live != "" {
-		ps.live = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Live))
-	} else {
-		ps.live = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	ps := pickerStyles{
+		live:         fgOrDefault(t.Live, "2"),
+		playing:      fgOrDefault(t.Playing, "2"),
+		adBreak:      fgOrDefault(t.AdBreak, "3"),
+		waiting:      fgOrDefault(t.Waiting, "4"),
+		reconnecting: fgOrDefault(t.Reconnecting, "6"),
+		category:     fgOrDefault(t.Category, "6"),
+		favorite:     fgOrDefault(t.Favorite, "3"),
+		tabActive:    fgOrDefault(t.TabActive, "5").Bold(true),
+		border:       fgOrPlain(t.Border),
+		text:         fgOrPlain(t.Text),
 	}
 
 	if t.Offline != "" {
@@ -191,60 +217,6 @@ func buildStyles(t Theme) pickerStyles {
 		ps.selected = s
 	} else {
 		ps.selected = lipgloss.NewStyle().Reverse(true)
-	}
-
-	if t.Border != "" {
-		ps.border = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Border))
-	} else {
-		ps.border = lipgloss.NewStyle()
-	}
-
-	if t.Text != "" {
-		ps.text = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Text))
-	} else {
-		ps.text = lipgloss.NewStyle()
-	}
-
-	if t.Playing != "" {
-		ps.playing = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Playing))
-	} else {
-		ps.playing = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	}
-
-	if t.AdBreak != "" {
-		ps.adBreak = lipgloss.NewStyle().Foreground(lipgloss.Color(t.AdBreak))
-	} else {
-		ps.adBreak = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	}
-
-	if t.Waiting != "" {
-		ps.waiting = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Waiting))
-	} else {
-		ps.waiting = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
-	}
-
-	if t.Reconnecting != "" {
-		ps.reconnecting = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Reconnecting))
-	} else {
-		ps.reconnecting = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	}
-
-	if t.TabActive != "" {
-		ps.tabActive = lipgloss.NewStyle().Foreground(lipgloss.Color(t.TabActive)).Bold(true)
-	} else {
-		ps.tabActive = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
-	}
-
-	if t.Category != "" {
-		ps.category = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Category))
-	} else {
-		ps.category = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	}
-
-	if t.Favorite != "" {
-		ps.favorite = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Favorite))
-	} else {
-		ps.favorite = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	}
 
 	return ps

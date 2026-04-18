@@ -31,9 +31,7 @@ func (m Model) bindings() []Binding {
 			Handler: func(m Model) (Model, tea.Cmd) {
 				m.mode = (m.mode + 1) % 4
 				m.cursor = 0
-				m.titleScrollOffset = 0
-				m.titleScrollDir = 1
-				return m, m.loadCurrentView()
+				return m.resetTitleScroll(), m.loadCurrentView()
 			},
 		},
 		{
@@ -41,9 +39,7 @@ func (m Model) bindings() []Binding {
 			Handler: func(m Model) (Model, tea.Cmd) {
 				m.mode = (m.mode + 3) % 4
 				m.cursor = 0
-				m.titleScrollOffset = 0
-				m.titleScrollDir = 1
-				return m, m.loadCurrentView()
+				return m.resetTitleScroll(), m.loadCurrentView()
 			},
 		},
 		{
@@ -67,27 +63,21 @@ func (m Model) bindings() []Binding {
 			Keys: []string{"g"}, Display: "g / G", Desc: "Top / bottom",
 			Handler: func(m Model) (Model, tea.Cmd) {
 				m.cursor = 0
-				m.titleScrollOffset = 0
-				m.titleScrollDir = 1
-				return m, nil
+				return m.resetTitleScroll(), nil
 			},
 		},
 		{
 			Keys: []string{"G"}, Display: "", Desc: "",
 			Handler: func(m Model) (Model, tea.Cmd) {
 				m.cursor = m.currentListLen() - 1
-				m.titleScrollOffset = 0
-				m.titleScrollDir = 1
-				return m, nil
+				return m.resetTitleScroll(), nil
 			},
 		},
 		{
 			Keys: []string{"home"}, Display: "", Desc: "",
 			Handler: func(m Model) (Model, tea.Cmd) {
 				m.cursor = 0
-				m.titleScrollOffset = 0
-				m.titleScrollDir = 1
-				return m, nil
+				return m.resetTitleScroll(), nil
 			},
 		},
 		{
@@ -97,9 +87,7 @@ func (m Model) bindings() []Binding {
 				if n > 0 {
 					m.cursor = n - 1
 				}
-				m.titleScrollOffset = 0
-				m.titleScrollDir = 1
-				return m, nil
+				return m.resetTitleScroll(), nil
 			},
 		},
 		{

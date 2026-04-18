@@ -1,10 +1,15 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/rivo/uniseg"
 )
+
+// overlayRowPadding is the left + right gutter included in every list-overlay
+// row ("  text  " → 2 leading and 2 trailing spaces around the visible label).
+const overlayRowPadding = 4
 
 // renderOverlay dispatches to the currently active overlay's renderer.
 // Returns "" when no overlay is active.
@@ -53,6 +58,24 @@ func (m Model) overlayFooter(w int) string {
 // overlayRow wraps content with side borders to form a body row.
 func (m Model) overlayRow(content string) string {
 	return m.styles.border.Render("│") + content + m.styles.border.Render("│")
+}
+
+// renderListOverlay renders a standard list overlay — title header, one row
+// per item, bottom border — with selection highlighting on the cursor row.
+// The quality and theme pickers share this chrome; only the item label
+// computation differs.
+func (m Model) renderListOverlay(title string, minWidth int, count int, cursor int, label func(i int) string) string {
+	w := overlayWidth(title, minWidth)
+	lines := m.overlayHeader(title, w)
+	for i := 0; i < count; i++ {
+		row := fmt.Sprintf("  %-*s  ", w-overlayRowPadding, label(i))
+		if i == cursor {
+			row = m.styles.selected.Render(row)
+		}
+		lines = append(lines, m.overlayRow(row))
+	}
+	lines = append(lines, m.overlayFooter(w))
+	return strings.Join(lines, "\n")
 }
 
 // overlayOn centers overlay content on top of the base string. Visible cells

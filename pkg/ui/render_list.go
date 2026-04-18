@@ -37,15 +37,26 @@ func (m Model) renderBody(height int) string {
 
 // --- Per-view list renderers ---
 
-func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string {
+// renderListState returns a single-line placeholder when the list is in a
+// transient state (loading / error / empty). Returns nil when real rows
+// should be rendered. emptyMsg is caller-specific because each view phrases
+// "nothing to show" differently.
+func (m Model) renderListState(count int, emptyMsg string) []string {
 	if m.loading {
 		return []string{"  Loading..."}
 	}
 	if m.err != nil {
 		return []string{fmt.Sprintf("  Error: %v", m.err)}
 	}
-	if len(entries) == 0 {
-		return []string{"  No channels."}
+	if count == 0 {
+		return []string{emptyMsg}
+	}
+	return nil
+}
+
+func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string {
+	if lines := m.renderListState(len(entries), "  No channels."); lines != nil {
+		return lines
 	}
 
 	// Column widths; 4 separators of 2 spaces each between the 5 data columns.
@@ -201,14 +212,8 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 }
 
 func (m Model) renderCategoryList(entries []DiscoveryEntry, height int) []string {
-	if m.loading {
-		return []string{"  Loading..."}
-	}
-	if m.err != nil {
-		return []string{fmt.Sprintf("  Error: %v", m.err)}
-	}
-	if len(entries) == 0 {
-		return []string{"  No categories found. Loading..."}
+	if lines := m.renderListState(len(entries), "  No categories found. Loading..."); lines != nil {
+		return lines
 	}
 
 	colViewers := 10
