@@ -292,13 +292,7 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			if currentKey != nil {
 				keyCopy := *currentKey
 				if keyCopy.IV == nil {
-					iv := make([]byte, 16)
-					seqNum := mediaSequence + segIndex
-					iv[12] = byte(seqNum >> 24)
-					iv[13] = byte(seqNum >> 16)
-					iv[14] = byte(seqNum >> 8)
-					iv[15] = byte(seqNum)
-					keyCopy.IV = iv
+					keyCopy.IV = defaultIV(mediaSequence + segIndex)
 				}
 				seg.Key = &keyCopy
 			}
@@ -325,14 +319,7 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 			if currentKey != nil {
 				keyCopy := *currentKey
 				if keyCopy.IV == nil {
-					// Default IV is the segment sequence number as a 16-byte big-endian value
-					iv := make([]byte, 16)
-					seqNum := mediaSequence + segIndex
-					iv[12] = byte(seqNum >> 24)
-					iv[13] = byte(seqNum >> 16)
-					iv[14] = byte(seqNum >> 8)
-					iv[15] = byte(seqNum)
-					keyCopy.IV = iv
+					keyCopy.IV = defaultIV(mediaSequence + segIndex)
 				}
 				seg.Key = &keyCopy
 			}
@@ -354,6 +341,17 @@ func ParseMedia(data string, baseURL string) (*MediaPlaylist, error) {
 	}
 
 	return playlist, nil
+}
+
+// defaultIV returns the HLS default AES-128 IV derived from a segment
+// sequence number: 16 bytes big-endian, padded with leading zeros.
+func defaultIV(seqNum int) []byte {
+	iv := make([]byte, 16)
+	iv[12] = byte(seqNum >> 24)
+	iv[13] = byte(seqNum >> 16)
+	iv[14] = byte(seqNum >> 8)
+	iv[15] = byte(seqNum)
+	return iv
 }
 
 // resolveURL resolves a possibly relative URL against a base URL.

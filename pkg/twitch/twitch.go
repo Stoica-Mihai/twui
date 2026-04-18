@@ -231,10 +231,10 @@ func (t *TwitchClient) buildStreams(
 		if c.v.Audio != "" {
 			if am, ok := audioMedia[c.v.Audio]; ok && am.URI != "" {
 				audioStream := t.newHLSStream(ctx, am.URI)
-				muxed := &hls.MuxedHLSStream{
-					Video:      NewTwitchHLSStream(videoStream, t.LowLatency).HLSStream,
-					Audio:      NewTwitchHLSStream(audioStream, t.LowLatency).HLSStream,
-					FFmpegPath: t.FFmpegPath,
+				muxed := &stream.MuxedStream{
+					Video:  NewTwitchHLSStream(videoStream, t.LowLatency).HLSStream,
+					Audio:  NewTwitchHLSStream(audioStream, t.LowLatency).HLSStream,
+					FFmpeg: t.FFmpegPath,
 				}
 				streams[c.name] = &annotatedStream{Stream: muxed, info: info}
 				continue
