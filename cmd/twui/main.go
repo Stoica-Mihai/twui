@@ -204,6 +204,12 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 
 	playerPath, _ := cmd.Root().PersistentFlags().GetString("player")
 	playerArgs, _ := cmd.Root().PersistentFlags().GetStringSlice("player-args")
+	// applyFlagFromViper does not carry TOML slices back into pflag
+	// StringSlice flags, so fall back to Viper directly when the flag
+	// wasn't given on the CLI.
+	if f := cmd.Root().PersistentFlags().Lookup("player-args"); f != nil && !f.Changed && viper.IsSet("general.player-args") {
+		playerArgs = viper.GetStringSlice("general.player-args")
+	}
 	lowLatency, _ := cmd.Root().PersistentFlags().GetBool("low-latency")
 	client.LowLatency = lowLatency
 
