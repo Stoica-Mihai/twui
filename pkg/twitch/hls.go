@@ -68,6 +68,14 @@ type TwitchHLSStream struct {
 	// Populated on first Open.
 	bridge *tsbridge.Bridge
 
+	// lastEmittedSeq is the highest EXT-X-MEDIA-SEQUENCE number of any
+	// content segment that's been handed to the writer across every
+	// session this wrapper has opened. BypassAdBreak uses it to filter
+	// out overlapping segments from a fresh session's playlist window,
+	// so the player doesn't see the same video content replayed with
+	// different timestamps each time the bypass pump fires.
+	lastEmittedSeq int
+
 	// bypassInFlight is set while a BypassAdBreak call is running; a
 	// concurrent caller finds it set and drops its request rather than
 	// queueing behind it. Protected by mu. This is the only bypass
@@ -360,7 +368,26 @@ func (t *TwitchHLSStream) processSegments(segments []hls.Segment, isFirst bool) 
 	titlePatterns := t.AdTitlePatterns
 	hadContent := t.hadContent
 	onPreRoll := t.OnPreRoll
+	lastEmitted := t.lastEmittedSeq
 	t.mu.Unlock()
+
+	// Drop segments this wrapper has already handed to the writer in a
+	// previous session. Successive bypass sessions overlap at their
+	// playlist live edges (each fresh session re-exposes the last N
+	// segments via LiveEdge), and without this dedup the player replays
+	// the same content once per bypass.
+	if lastEmitted > 0 {
+		filtered := segments[:0]
+		for _, seg := range segments {
+			if seg.Num > lastEmitted {
+				filtered = append(filtered, seg)
+			}
+		}
+		segments = filtered
+		if len(segments) == 0 {
+			return segments
+		}
+	}
 
 	t.logNewAdBreaks(adDateRanges)
 
@@ -455,6 +482,12 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 	t.mu.Lock()
 	t.lastWasAd = false
 	t.adNotified = false
+	// Record that this content segment has been sent to the writer so
+	// subsequent bypass sessions can skip it via the lastEmitted filter
+	// in processSegments.
+	if seg.Num > t.lastEmittedSeq {
+		t.lastEmittedSeq = seg.Num
+	}
 	t.mu.Unlock()
 	return false
 }
