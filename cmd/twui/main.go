@@ -344,17 +344,14 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 
 			// Bypass pump: fires BypassAdBreak on a ticker while we're
-			// seeing ad-break detections, so the player gets fresh
-			// content from new sessions faster than Twitch's ~2-4s
-			// playlist refresh cadence. Stops itself after
-			// pumpStopDebounce of silence so we're not cycling tokens
-			// during normal content. Restarts whenever a new
-			// OnAdBreak fires.
-			//
-			// No desktop notifications for midrolls — bypass keeps
-			// playback continuous, so there's nothing for the user
-			// to be informed about; the in-UI status glyph handles
-			// any transient state changes.
+			// seeing ad-break detections. Starts on OnAdBreak, stops on
+			// OnAdEnd — the latter fires when shouldFilter sees the
+			// first content segment after a run of ads, which is exactly
+			// when bypassing stops being useful (and starts being
+			// harmful: a bypass during content opens a new session whose
+			// live edge is inside lastEmittedSeq and starves the pipe).
+			// pumpStopDebounce is a safety net in case OnAdEnd never
+			// fires — e.g. the ad run ends via stream drop.
 			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
 			var (
@@ -362,6 +359,20 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				pumpStopTimer *time.Timer
 				pumpStop      chan struct{}
 			)
+
+			stopPump := func() {
+				pumpMu.Lock()
+				if pumpStopTimer != nil {
+					pumpStopTimer.Stop()
+					pumpStopTimer = nil
+				}
+				stop := pumpStop
+				pumpStop = nil
+				pumpMu.Unlock()
+				if stop != nil {
+					close(stop)
+				}
+			}
 
 			bypasser, _ := s.(stream.AdBypasser)
 			runBypass := func() {
@@ -391,15 +402,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					if pumpStopTimer != nil {
 						pumpStopTimer.Stop()
 					}
-					pumpStopTimer = time.AfterFunc(pumpStopDebounce, func() {
-						pumpMu.Lock()
-						stop := pumpStop
-						pumpStop = nil
-						pumpMu.Unlock()
-						if stop != nil {
-							close(stop)
-						}
-					})
+					pumpStopTimer = time.AfterFunc(pumpStopDebounce, stopPump)
 					var startPump bool
 					var localStopCh chan struct{}
 					if pumpStop == nil {
@@ -431,6 +434,11 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			if aen, ok := s.(stream.AdEndNotifier); ok {
 				aen.SetOnAdEnd(func() {
 					send(ui.StatusPlaying, q)
+					// Content resumed — the pump has nothing useful to
+					// do now and each tick would just log "not in ad
+					// break". Stop immediately; OnAdBreak restarts it
+					// if another ad rolls in.
+					stopPump()
 				})
 			}
 			if prn, ok := s.(stream.PreRollNotifier); ok {
