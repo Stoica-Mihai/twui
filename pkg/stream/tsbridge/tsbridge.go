@@ -20,10 +20,9 @@ const (
 	tsPacketSize = 188
 	tsSyncByte   = 0x47
 
-	// ptsModulo is 2^33 — PTS/DTS are 33-bit values that wrap.
-	ptsModulo = 1 << 33
-	// pcrBaseModulo is 2^33 — PCR base is also 33 bits at 90kHz.
-	pcrBaseModulo = 1 << 33
+	// ts90kModulo is 2^33 — PCR base, PTS and DTS are all 33-bit values
+	// at 90kHz and share the same wrap point.
+	ts90kModulo = 1 << 33
 
 	// ptsContinuationDelta is a one-frame-ish gap inserted between the
 	// last emitted PTS on a PID and the first post-swap PTS rewrite target
@@ -81,6 +80,10 @@ type Bridge struct {
 	// emit holds processed packets ready to copy out to the consumer.
 	// Lets Read serve arbitrary request sizes without losing alignment.
 	emit []byte
+	// readBuf is the per-Bridge scratch buffer for pulling bytes from
+	// inner. Reused across Read calls so we don't allocate 32 KiB on
+	// every call on a per-video-frame hot path.
+	readBuf [32 * 1024]byte
 }
 
 // New wraps r in a Bridge. The returned Bridge passes bytes through
@@ -137,14 +140,13 @@ func (b *Bridge) Read(p []byte) (int, error) {
 		}
 		b.mu.Unlock()
 
-		tmp := make([]byte, 32*1024)
-		n, err := b.inner.Read(tmp)
+		n, err := b.inner.Read(b.readBuf[:])
 		if n == 0 {
 			return 0, err
 		}
 
 		b.mu.Lock()
-		b.carry = append(b.carry, tmp[:n]...)
+		b.carry = append(b.carry, b.readBuf[:n]...)
 		for len(b.carry) >= tsPacketSize {
 			if b.carry[0] != tsSyncByte {
 				off := findSync(b.carry)
@@ -252,8 +254,8 @@ func (b *Bridge) ensureOffsetLocked(clock uint64) {
 		return
 	}
 	if b.haveClock {
-		target := (b.lastClock + ptsContinuationDelta) % ptsModulo
-		b.clockOffset = (target + ptsModulo - clock) % ptsModulo
+		target := (b.lastClock + ptsContinuationDelta) % ts90kModulo
+		b.clockOffset = (target + ts90kModulo - clock) % ts90kModulo
 	} else {
 		// No prior clock reference — pass the stream through unchanged.
 		b.clockOffset = 0
@@ -272,7 +274,7 @@ func (b *Bridge) handlePCRLocked(_ uint16, pcrBytes []byte) {
 	b.ensureOffsetLocked(base)
 
 	if b.haveOffset && b.clockOffset != 0 {
-		base = (base + b.clockOffset) % pcrBaseModulo
+		base = (base + b.clockOffset) % ts90kModulo
 		writePCR(pcrBytes, base, ext)
 	}
 
@@ -306,7 +308,7 @@ func (b *Bridge) handlePESStartLocked(_ uint16, payload []byte) {
 	b.ensureOffsetLocked(pts)
 
 	if b.haveOffset && b.clockOffset != 0 {
-		pts = (pts + b.clockOffset) % ptsModulo
+		pts = (pts + b.clockOffset) % ts90kModulo
 		writeTimestamp(payload[9:14], pts, 0x02)
 	}
 	b.lastClock = pts
@@ -316,7 +318,7 @@ func (b *Bridge) handlePESStartLocked(_ uint16, payload []byte) {
 	if ptsDTSFlags == 0x03 && len(payload) >= 19 {
 		dts := readTimestamp(payload[14:19])
 		if b.haveOffset && b.clockOffset != 0 {
-			dts = (dts + b.clockOffset) % ptsModulo
+			dts = (dts + b.clockOffset) % ts90kModulo
 			writeTimestamp(payload[14:19], dts, 0x01)
 		}
 	}
