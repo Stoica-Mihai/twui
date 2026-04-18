@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -405,14 +406,22 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					// Try to skip the ad by swapping the HLS session under
 					// the player. Runs in its own goroutine so the HLS
 					// worker thread that fired this callback isn't blocked
-					// on the token+playlist fetch.
+					// on the token+playlist fetch. Cooldown, single-flight,
+					// and preroll skips are expected throttles — debug-log
+					// them rather than surfacing as failures.
 					if bypasser, ok := s.(stream.AdBypasser); ok {
 						go func() {
-							if err := bypasser.BypassAdBreak(c); err != nil {
+							err := bypasser.BypassAdBreak(c)
+							switch {
+							case err == nil:
+								slog.Info("Ad-break bypass applied", "channel", channel)
+							case errors.Is(err, twitch.ErrBypassCooldown),
+								errors.Is(err, twitch.ErrBypassInFlight),
+								errors.Is(err, twitch.ErrBypassPreContent):
+								slog.Debug("Ad-break bypass skipped", "channel", channel, "reason", err)
+							default:
 								slog.Warn("Ad-break bypass failed", "channel", channel, "err", err)
-								return
 							}
-							slog.Info("Ad-break bypass applied", "channel", channel)
 						}()
 					}
 				})

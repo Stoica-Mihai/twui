@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mcs/twui/pkg/stream"
 	"github.com/mcs/twui/pkg/stream/hls"
@@ -40,6 +41,8 @@ func TestTwitchHLSStream_BypassAdBreak_BeforeOpen(t *testing.T) {
 		t.Fatal("RefreshURL should not run when called before Open")
 		return "", nil
 	}
+	// Get past the preroll guard so we reach the outer==nil check.
+	s.hadContent = true
 
 	err := s.BypassAdBreak(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "before Open") {
@@ -53,12 +56,55 @@ func TestTwitchHLSStream_BypassAdBreak_RefreshURLError(t *testing.T) {
 	s.RefreshURL = func(ctx context.Context) (string, error) {
 		return "", sentinel
 	}
-	// Inject a FilteredStream so the "before Open" guard passes and
-	// BypassAdBreak can reach the RefreshURL call.
 	s.outer = stream.NewFilteredStream(&noopReadCloser{r: bytes.NewReader(nil)})
+	s.hadContent = true
 
 	err := s.BypassAdBreak(context.Background())
 	if !errors.Is(err, sentinel) {
 		t.Errorf("BypassAdBreak err = %v, want %v", err, sentinel)
+	}
+}
+
+func TestTwitchHLSStream_BypassAdBreak_SkipsPreroll(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+	s.RefreshURL = func(ctx context.Context) (string, error) {
+		t.Fatal("RefreshURL must not run during preroll skip")
+		return "", nil
+	}
+
+	err := s.BypassAdBreak(context.Background())
+	if !errors.Is(err, ErrBypassPreContent) {
+		t.Errorf("BypassAdBreak pre-content err = %v, want ErrBypassPreContent", err)
+	}
+}
+
+func TestTwitchHLSStream_BypassAdBreak_Cooldown(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+	s.BypassCooldown = time.Hour
+	s.hadContent = true
+	s.lastBypassAt = time.Now()
+	s.RefreshURL = func(ctx context.Context) (string, error) {
+		t.Fatal("RefreshURL must not run inside cooldown")
+		return "", nil
+	}
+
+	err := s.BypassAdBreak(context.Background())
+	if !errors.Is(err, ErrBypassCooldown) {
+		t.Errorf("BypassAdBreak cooldown err = %v, want ErrBypassCooldown", err)
+	}
+}
+
+func TestTwitchHLSStream_BypassAdBreak_SingleFlight(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+	s.hadContent = true
+	s.bypassInFlight = true
+	s.RefreshURL = func(ctx context.Context) (string, error) {
+		t.Fatal("RefreshURL must not run when another bypass is in flight")
+		return "", nil
+	}
+
+	err := s.BypassAdBreak(context.Background())
+	if !errors.Is(err, ErrBypassInFlight) {
+		t.Errorf("BypassAdBreak in-flight err = %v, want ErrBypassInFlight", err)
 	}
 }

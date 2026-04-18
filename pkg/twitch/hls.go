@@ -56,16 +56,40 @@ type TwitchHLSStream struct {
 	// HLS pipeline on the fly.
 	RefreshURL func(ctx context.Context) (string, error)
 
+	// BypassCooldown is the minimum interval between successful
+	// BypassAdBreak calls. Extra calls inside the window return
+	// ErrBypassCooldown without touching the network. Zero disables the
+	// throttle; NewTwitchHLSStream sets a sensible default.
+	BypassCooldown time.Duration
+
 	// outer is the FilteredStream the consumer (mpv) actually reads from.
 	// Stays constant across bypass swaps so pause/resume keeps addressing
 	// the single reader the player holds; the embedded HLSStream.Filtered
 	// drifts out of date after a swap and must not be used for control.
 	outer *stream.FilteredStream
 
-	// bypassing is held for the duration of a BypassAdBreak call to serialize
-	// concurrent attempts (e.g. overlapping ad-break notifications).
-	bypassing sync.Mutex
+	// bypassInFlight is set while a BypassAdBreak call is running; a
+	// concurrent caller finds it set and drops its request rather than
+	// queueing behind it. Protected by mu.
+	bypassInFlight bool
+	// lastBypassAt is the completion time of the most recent successful
+	// bypass. Used with BypassCooldown to throttle rapid retries.
+	lastBypassAt time.Time
 }
+
+// ErrBypassCooldown is returned by BypassAdBreak when a call arrives
+// within BypassCooldown of the previous successful bypass.
+var ErrBypassCooldown = errors.New("twitch: bypass skipped, cooldown active")
+
+// ErrBypassInFlight is returned by BypassAdBreak when another bypass is
+// currently executing. Callers should treat it as a successful dedup and
+// move on rather than retrying.
+var ErrBypassInFlight = errors.New("twitch: bypass skipped, already in progress")
+
+// ErrBypassPreContent is returned by BypassAdBreak before any content
+// has been observed on the stream (preroll). Bypassing at that point
+// just cycles a fresh token with the same preroll stitched in.
+var ErrBypassPreContent = errors.New("twitch: bypass skipped, preroll")
 
 // SetOnAdBreak implements stream.AdBreakNotifier.
 func (t *TwitchHLSStream) SetOnAdBreak(fn func(duration float64, adType string)) {
@@ -96,6 +120,11 @@ func NewTwitchHLSStream(hlsStream *hls.HLSStream, lowLatency bool) *TwitchHLSStr
 		AdTitlePatterns: []string{"Amazon"},
 		AdClassPatterns: []string{"twitch-stitched-ad"},
 		AdIDPrefixes:    []string{"stitched-ad-"},
+		// Default throttle: Twitch refreshes the playlist every ~2-4s and
+		// redeclares the ad-break entry on each refresh, so without this
+		// we'd fire 25+ token fetches over a single 3-minute break. 15s
+		// keeps the useful first-bypass behavior while cutting the churn.
+		BypassCooldown: 15 * time.Second,
 	}
 
 	t.wireHooks(hlsStream)
@@ -145,14 +174,40 @@ func (t *TwitchHLSStream) outerFiltered() *stream.FilteredStream {
 // (mpv) keeps its pipe open across the swap — it just starts receiving bytes
 // from a new Twitch session that may not have the current ad stitched in.
 //
-// Requires RefreshURL to be set. Concurrent calls serialize on t.bypassing.
+// Requires RefreshURL to be set. Concurrent callers get ErrBypassInFlight;
+// callers arriving within BypassCooldown of the last success get
+// ErrBypassCooldown; calls before any content has played (preroll) get
+// ErrBypassPreContent. All three are "informational skips" and should not
+// be treated as hard failures by callers.
 func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	if t.RefreshURL == nil {
 		return errors.New("twitch: BypassAdBreak requires RefreshURL")
 	}
 
-	t.bypassing.Lock()
-	defer t.bypassing.Unlock()
+	// Single-flight + cooldown + preroll checks under one lock so they
+	// observe consistent state.
+	t.mu.Lock()
+	if t.bypassInFlight {
+		t.mu.Unlock()
+		return ErrBypassInFlight
+	}
+	if !t.hadContent {
+		t.mu.Unlock()
+		return ErrBypassPreContent
+	}
+	if t.BypassCooldown > 0 && !t.lastBypassAt.IsZero() &&
+		time.Since(t.lastBypassAt) < t.BypassCooldown {
+		t.mu.Unlock()
+		return ErrBypassCooldown
+	}
+	t.bypassInFlight = true
+	t.mu.Unlock()
+
+	defer func() {
+		t.mu.Lock()
+		t.bypassInFlight = false
+		t.mu.Unlock()
+	}()
 
 	outer := t.outerFiltered()
 	if outer == nil {
@@ -206,6 +261,10 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	// goroutines exit rather than spinning on a closed pipe.
 	outer.SwapReader(newReader)
 	oldInner.Cancel()
+
+	t.mu.Lock()
+	t.lastBypassAt = time.Now()
+	t.mu.Unlock()
 
 	return nil
 }
