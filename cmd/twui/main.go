@@ -417,11 +417,19 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// drops ticks that collide with an already-running fetch.
 			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
+			// When OnAdScheduleCleared fires, hold the end event for this
+			// long before emitting the "Ad break ended" notification.
+			// Guards against false positives: each new bypass session
+			// polls a fresh playlist that may happen to be momentarily
+			// clean even though the cluster is still active — a real
+			// end will stay clean past the confirmation window.
+			const endConfirmDelay = 15 * time.Second
 			var (
-				adNotifyMu    sync.Mutex
-				inAdBreak     bool
-				pumpStopTimer *time.Timer
-				pumpStop      chan struct{}
+				adNotifyMu      sync.Mutex
+				inAdBreak       bool
+				pumpStopTimer   *time.Timer
+				endConfirmTimer *time.Timer
+				pumpStop        chan struct{}
 			)
 
 			bypasser, _ := s.(stream.AdBypasser)
@@ -449,6 +457,15 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					adNotifyMu.Lock()
 					firstOfBreak := !inAdBreak
 					inAdBreak = true
+
+					// A new detection during the end-confirmation
+					// window means the earlier schedule-cleared signal
+					// was a false positive — the cluster is still
+					// active, cancel the pending "Ad break ended".
+					if endConfirmTimer != nil {
+						endConfirmTimer.Stop()
+						endConfirmTimer = nil
+					}
 
 					// Pump-stop debounce: the pump keeps running this
 					// long past the last detection so playlist-refresh
@@ -507,30 +524,50 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					}
 				})
 			}
-			// "Ad break ended" fires exactly when the playlist transitions
-			// from having at least one active ad-break declaration to
-			// having none — a direct signal from Twitch's side rather
-			// than a silence timer. Also stops the pump so we don't keep
-			// bypassing for nothing.
+			// "Ad break ended" is armed when Twitch's playlist transitions
+			// from declaring at least one active ad break to declaring
+			// none. Because the bypass pump cycles through many sessions
+			// — each with its own playlist — a single fresh session's
+			// first-poll "clean" reading is not enough to trust; we
+			// confirm after endConfirmDelay, cancelling if OnAdBreak
+			// fires again in the meantime.
 			if asc, ok := s.(stream.AdScheduleClearedNotifier); ok {
 				asc.SetOnAdScheduleCleared(func() {
 					adNotifyMu.Lock()
-					wasIn := inAdBreak
-					inAdBreak = false
-					stop := pumpStop
-					pumpStop = nil
-					if pumpStopTimer != nil {
-						pumpStopTimer.Stop()
-						pumpStopTimer = nil
+					if !inAdBreak {
+						adNotifyMu.Unlock()
+						return
 					}
+					if endConfirmTimer != nil {
+						endConfirmTimer.Stop()
+					}
+					endConfirmTimer = time.AfterFunc(endConfirmDelay, func() {
+						adNotifyMu.Lock()
+						wasIn := inAdBreak
+						inAdBreak = false
+						stop := pumpStop
+						pumpStop = nil
+						if pumpStopTimer != nil {
+							pumpStopTimer.Stop()
+							pumpStopTimer = nil
+						}
+						endConfirmTimer = nil
+						adNotifyMu.Unlock()
+						if stop != nil {
+							close(stop)
+						}
+						select {
+						case <-c.Done():
+							return
+						default:
+						}
+						if wasIn {
+							slog.Info("Ad-break ended: schedule cleared + confirmed", "channel", channel)
+							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+						}
+					})
 					adNotifyMu.Unlock()
-					if stop != nil {
-						close(stop)
-					}
-					if wasIn {
-						slog.Info("Ad-break ended: schedule cleared", "channel", channel)
-						notifier.SendWithIcon(channel, "Ad break ended", getIcon())
-					}
+					slog.Debug("Ad-break schedule cleared, confirming", "channel", channel)
 				})
 			}
 			if aen, ok := s.(stream.AdEndNotifier); ok {
