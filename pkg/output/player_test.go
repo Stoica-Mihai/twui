@@ -101,7 +101,7 @@ func TestBuildArgs_AbsolutePathBinaryMatch(t *testing.T) {
 
 func TestBuildArgs_MPVCacheDefaults(t *testing.T) {
 	args := (&Player{Path: "mpv"}).buildArgs()
-	for _, want := range []string{"--cache=yes", "--cache-secs=30"} {
+	for _, want := range []string{"--cache=yes", "--cache-secs=30", "--cache-pause=no"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("mpv args should include %q by default, got %v", want, args)
 		}
@@ -146,7 +146,7 @@ func TestBuildArgs_UnknownBinaryGetsNoPlayerSpecificFlags(t *testing.T) {
 	for _, bad := range []string{
 		"--force-media-title=s", "--meta-title=s",
 		"--no-terminal", "--vid=no", "--force-window",
-		"--cache=yes", "--cache-secs=30",
+		"--cache=yes", "--cache-secs=30", "--cache-pause=no",
 		"--file-caching=30000", "--network-caching=30000",
 	} {
 		if slices.Contains(args, bad) {
