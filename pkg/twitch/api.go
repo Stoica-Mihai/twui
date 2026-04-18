@@ -194,17 +194,24 @@ func (a *TwitchAPI) getIntegrityToken(ctx context.Context) string {
 	return token
 }
 
+// setAuthHeaders writes the Twitch client identity headers onto req. Called
+// by every GQL/integrity request; keeps the header set in one place so
+// Client-ID, Client-Session-Id, X-Device-ID and User-Agent stay in sync.
+func (a *TwitchAPI) setAuthHeaders(req *http.Request) {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Client-ID", a.ClientID)
+	req.Header.Set("Client-Session-Id", a.clientSessionID)
+	req.Header.Set("X-Device-ID", a.DeviceID)
+	req.Header.Set("User-Agent", a.UserAgent)
+}
+
 // fetchIntegrityToken makes a single request to the Twitch passport endpoint.
 func (a *TwitchAPI) fetchIntegrityToken(ctx context.Context) (string, time.Time) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, IntegrityEndpoint, strings.NewReader("{}"))
 	if err != nil {
 		return "", time.Time{}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Client-ID", a.ClientID)
-	req.Header.Set("Client-Session-Id", a.clientSessionID)
-	req.Header.Set("X-Device-ID", a.DeviceID)
-	req.Header.Set("User-Agent", a.UserAgent)
+	a.setAuthHeaders(req)
 
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -338,24 +345,30 @@ func (a *TwitchAPI) StreamMetadata(ctx context.Context, channel string) (*Metada
 	return md, nil
 }
 
+// marshalGQLBody serializes a GQL request envelope. Centralized so persisted
+// and fallback paths produce identical errors on marshal failure (unlikely
+// in practice — these types are plain JSON).
+func marshalGQLBody(req any) ([]byte, error) {
+	b, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("twitch: marshal gql request: %w", err)
+	}
+	return b, nil
+}
+
 // doGQL sends a persisted query and falls back to full query text on hash miss.
 func (a *TwitchAPI) doGQL(ctx context.Context, operationName, hash string, variables map[string]any, extraHeaders map[string]string) (json.RawMessage, error) {
 	// When hash is empty, skip straight to full query fallback.
 	if hash != "" {
-		reqBody := gqlRequest{
+		bodyBytes, err := marshalGQLBody(gqlRequest{
 			OperationName: operationName,
 			Extensions: gqlExtensions{
-				PersistedQuery: gqlPersistedQuery{
-					Version:    1,
-					SHA256Hash: hash,
-				},
+				PersistedQuery: gqlPersistedQuery{Version: 1, SHA256Hash: hash},
 			},
 			Variables: variables,
-		}
-
-		bodyBytes, err := json.Marshal(reqBody)
+		})
 		if err != nil {
-			return nil, fmt.Errorf("twitch: marshal gql request: %w", err)
+			return nil, err
 		}
 
 		slog.Debug("GQL request", "operation", operationName)
@@ -379,20 +392,16 @@ func (a *TwitchAPI) doGQL(ctx context.Context, operationName, hash string, varia
 
 	sum := sha256.Sum256([]byte(queryText))
 	queryHash := hex.EncodeToString(sum[:])
-	fallbackBody := gqlFallbackRequest{
+	bodyBytes, err := marshalGQLBody(gqlFallbackRequest{
 		OperationName: operationName,
 		Query:         queryText,
 		Extensions: gqlExtensions{
-			PersistedQuery: gqlPersistedQuery{
-				Version:    1,
-				SHA256Hash: queryHash,
-			},
+			PersistedQuery: gqlPersistedQuery{Version: 1, SHA256Hash: queryHash},
 		},
 		Variables: variables,
-	}
-	bodyBytes, err := json.Marshal(fallbackBody)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("twitch: marshal gql fallback request: %w", err)
+		return nil, err
 	}
 
 	return a.doGQLRoundTrip(ctx, bodyBytes, extraHeaders, operationName)
@@ -405,11 +414,7 @@ func (a *TwitchAPI) doGQLRoundTrip(ctx context.Context, bodyBytes []byte, extraH
 		return nil, fmt.Errorf("twitch: create gql request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Client-ID", a.ClientID)
-	req.Header.Set("User-Agent", a.UserAgent)
-	req.Header.Set("X-Device-ID", a.DeviceID)
-	req.Header.Set("Client-Session-Id", a.clientSessionID)
+	a.setAuthHeaders(req)
 	if token := a.getIntegrityToken(ctx); token != "" {
 		req.Header.Set("Client-Integrity", token)
 	}

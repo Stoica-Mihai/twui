@@ -153,7 +153,7 @@ func (t *TwitchClient) fetchMasterPlaylist(ctx context.Context, masterURL string
 		return nil, fmt.Errorf("twitch: read master playlist: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
+	if isHTTPError(resp.StatusCode) {
 		errMsg := parseUsherError(body)
 		if errMsg != "" {
 			return nil, fmt.Errorf("twitch: %s", errMsg)
@@ -301,11 +301,15 @@ func (t *TwitchClient) validatePlaylistURL(ctx context.Context, playlistURL stri
 		resp.Body.Close()
 	}
 
-	if resp.StatusCode >= 400 {
+	if isHTTPError(resp.StatusCode) {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
+
+// isHTTPError reports whether status is a 4xx/5xx response — the threshold
+// the Twitch endpoints treat as "request failed, body is an error payload."
+func isHTTPError(status int) bool { return status >= 400 }
 
 func (t *TwitchClient) ensureTransportWithHeaders() {
 	if t.client.Transport == nil {
@@ -319,15 +323,19 @@ type twitchTransport struct {
 	base http.RoundTripper
 }
 
+// twitchPlayerOrigin is the Referer/Origin value sent with anonymous Twitch
+// requests — Twitch rejects some endpoints without it.
+const twitchPlayerOrigin = "https://player.twitch.tv"
+
 func (t *twitchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	host := req.URL.Hostname()
 	if strings.HasSuffix(host, "twitch.tv") || strings.HasSuffix(host, "ttvnw.net") {
 		req = req.Clone(req.Context())
 		if req.Header.Get("Referer") == "" {
-			req.Header.Set("Referer", "https://player.twitch.tv")
+			req.Header.Set("Referer", twitchPlayerOrigin)
 		}
 		if req.Header.Get("Origin") == "" {
-			req.Header.Set("Origin", "https://player.twitch.tv")
+			req.Header.Set("Origin", twitchPlayerOrigin)
 		}
 	}
 	return t.base.RoundTrip(req)

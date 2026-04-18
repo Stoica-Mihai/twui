@@ -33,12 +33,19 @@ const (
 	defaultStreamLimit = 30
 )
 
+// normalizeLimit clamps a caller-provided limit to fallback when non-positive.
+// Every discovery endpoint applies the same default-when-zero policy.
+func normalizeLimit(limit, fallback int) int {
+	if limit <= 0 {
+		return fallback
+	}
+	return limit
+}
+
 // SearchChannels searches for live channels matching query.
 // Returns up to limit results (Twitch default/max ~20).
 func (a *TwitchAPI) SearchChannels(ctx context.Context, query string, limit int) ([]ChannelResult, error) {
-	if limit <= 0 {
-		limit = defaultSearchLimit
-	}
+	limit = normalizeLimit(limit, defaultSearchLimit)
 
 	variables := map[string]any{
 		"query":    query,
@@ -105,9 +112,7 @@ func (a *TwitchAPI) SearchChannels(ctx context.Context, query string, limit int)
 // BrowseCategories returns top-level categories sorted by viewer count.
 // cursor is empty on first call; pass the returned cursor for pagination.
 func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor string) ([]CategoryResult, string, error) {
-	if limit <= 0 {
-		limit = defaultBrowseLimit
-	}
+	limit = normalizeLimit(limit, defaultBrowseLimit)
 
 	variables := map[string]any{
 		"limit": limit,
@@ -146,7 +151,6 @@ func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor stri
 	}
 
 	results := make([]CategoryResult, 0, len(data.Games.Edges))
-	var nextCursor string
 	for _, edge := range data.Games.Edges {
 		results = append(results, CategoryResult{
 			ID:          edge.Node.ID,
@@ -154,22 +158,19 @@ func (a *TwitchAPI) BrowseCategories(ctx context.Context, limit int, cursor stri
 			ViewerCount: edge.Node.ViewersCount,
 			BoxArtURL:   edge.Node.BoxArtURL,
 		})
-		nextCursor = edge.Cursor
 	}
 
-	if data.Games.PageInfo != nil && !data.Games.PageInfo.HasNextPage {
-		nextCursor = ""
+	var nextCursor string
+	if data.Games.PageInfo != nil && data.Games.PageInfo.HasNextPage && len(data.Games.Edges) > 0 {
+		nextCursor = data.Games.Edges[len(data.Games.Edges)-1].Cursor
 	}
-
 	return results, nextCursor, nil
 }
 
 // CategoryStreams returns live streams within a category.
 // cursor is empty on first call; returns next cursor for pagination.
 func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, limit int, cursor string) ([]ChannelResult, string, error) {
-	if limit <= 0 {
-		limit = defaultStreamLimit
-	}
+	limit = normalizeLimit(limit, defaultStreamLimit)
 
 	variables := map[string]any{
 		"categoryName": categoryName,
@@ -229,7 +230,6 @@ func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, li
 	}
 
 	results := make([]ChannelResult, 0, len(data.Game.Streams.Edges))
-	var nextCursor string
 	for _, edge := range data.Game.Streams.Edges {
 		node := edge.Node
 		r := ChannelResult{
@@ -245,13 +245,12 @@ func (a *TwitchAPI) CategoryStreams(ctx context.Context, categoryName string, li
 			r.Category = node.Game.Name
 		}
 		results = append(results, r)
-		nextCursor = edge.Cursor
 	}
 
-	if data.Game.Streams.PageInfo != nil && !data.Game.Streams.PageInfo.HasNextPage {
-		nextCursor = ""
+	var nextCursor string
+	if data.Game.Streams.PageInfo != nil && data.Game.Streams.PageInfo.HasNextPage && len(data.Game.Streams.Edges) > 0 {
+		nextCursor = data.Game.Streams.Edges[len(data.Game.Streams.Edges)-1].Cursor
 	}
-
 	return results, nextCursor, nil
 }
 
