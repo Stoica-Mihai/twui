@@ -102,8 +102,14 @@ func demoFuncs() ui.DiscoveryFuncs {
 	}
 
 	return ui.DiscoveryFuncs{
-		WatchList: func(ctx context.Context) ([]ui.DiscoveryEntry, error) {
-			return applyIgnored(watchlist()), nil
+		WatchList: func(ctx context.Context) (<-chan ui.DiscoveryEntry, error) {
+			entries := applyIgnored(watchlist())
+			out := make(chan ui.DiscoveryEntry, len(entries))
+			for _, e := range entries {
+				out <- e
+			}
+			close(out)
+			return out, nil
 		},
 
 		Search: func(ctx context.Context, query string) ([]ui.DiscoveryEntry, error) {

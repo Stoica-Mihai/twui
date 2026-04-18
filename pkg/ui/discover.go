@@ -40,8 +40,12 @@ type DiscoveryEntry struct {
 
 // DiscoveryFuncs holds callbacks that the picker model calls for data fetching.
 type DiscoveryFuncs struct {
-	// WatchList returns current favorites with their live status.
-	WatchList func(ctx context.Context) ([]DiscoveryEntry, error)
+	// WatchList streams current favorites with their live status. The returned
+	// channel emits one DiscoveryEntry per favorite as its metadata resolves,
+	// then closes. The outer error covers setup failures only — per-favorite
+	// metadata errors are handled inside the closure (typically by emitting an
+	// offline-fallback entry) and do not interrupt the stream.
+	WatchList func(ctx context.Context) (<-chan DiscoveryEntry, error)
 
 	// Search returns live channels matching the query string.
 	Search func(ctx context.Context, query string) ([]DiscoveryEntry, error)

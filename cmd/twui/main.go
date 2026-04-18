@@ -214,46 +214,40 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	ignSet := toSet(ignored)
 
 	fns := ui.DiscoveryFuncs{
-		WatchList: func(c context.Context) ([]ui.DiscoveryEntry, error) {
-			if len(favorites) == 0 {
-				return nil, nil
-			}
-			entries := make([]ui.DiscoveryEntry, 0, len(favorites))
+		WatchList: func(c context.Context) (<-chan ui.DiscoveryEntry, error) {
+			out := make(chan ui.DiscoveryEntry)
+			pending := make([]string, 0, len(favorites))
 			for _, ch := range favorites {
-				if ignSet[ch] {
-					continue
+				if !ignSet[ch] {
+					pending = append(pending, ch)
 				}
-				md, err := api.StreamMetadata(c, ch)
-				if err != nil {
-					slog.Debug("metadata error", "channel", ch, "err", err)
-					entries = append(entries, ui.DiscoveryEntry{
-						Kind:        ui.EntryChannel,
-						Login:       ch,
-						DisplayName: ch,
-						IsFavorite:  true,
-						IsLive:      false,
-					})
-					continue
-				}
-				displayName := md.Author
-				if displayName == "" {
-					displayName = ch
-				}
-				isLive := !md.StartedAt.IsZero()
-				entries = append(entries, ui.DiscoveryEntry{
-					Kind:        ui.EntryChannel,
-					Login:       ch,
-					DisplayName: displayName,
-					Title:       md.Title,
-					Category:    md.Category,
-					ViewerCount: md.ViewerCount,
-					StartedAt:   md.StartedAt,
-					AvatarURL:   md.AvatarURL,
-					IsFavorite:  true,
-					IsLive:      isLive,
-				})
 			}
-			return entries, nil
+			go func() {
+				defer close(out)
+				// Bounded fan-out: one slow channel no longer blocks the rest,
+				// and the rate-limit surface stays small even with hundreds of
+				// favorites. 6 is empirical — fast enough to hide most
+				// round-trip latency without tripping Twitch's per-client
+				// burst limits on the metadata endpoint.
+				const maxParallel = 6
+				sem := make(chan struct{}, maxParallel)
+				var wg sync.WaitGroup
+				for _, ch := range pending {
+					wg.Add(1)
+					sem <- struct{}{}
+					go func(ch string) {
+						defer wg.Done()
+						defer func() { <-sem }()
+						entry := buildFavoriteEntry(c, api, ch)
+						select {
+						case out <- entry:
+						case <-c.Done():
+						}
+					}(ch)
+				}
+				wg.Wait()
+			}()
+			return out, nil
 		},
 
 		Search: func(c context.Context, query string) ([]ui.DiscoveryEntry, error) {
@@ -597,6 +591,39 @@ func runDemoTUI(cmd *cobra.Command) error {
 // channelEntry adapts a twitch.ChannelResult into a ui.DiscoveryEntry.
 // isLive is caller-supplied because Search relies on StartedAt presence while
 // CategoryStreams and RelatedChannels know the endpoint returns live streams.
+// buildFavoriteEntry resolves one favorite's metadata into a DiscoveryEntry.
+// Metadata errors degrade to an offline-fallback entry rather than propagating
+// — the UI still shows the login row, it just renders as offline.
+func buildFavoriteEntry(ctx context.Context, api *twitch.TwitchAPI, ch string) ui.DiscoveryEntry {
+	md, err := api.StreamMetadata(ctx, ch)
+	if err != nil {
+		slog.Debug("metadata error", "channel", ch, "err", err)
+		return ui.DiscoveryEntry{
+			Kind:        ui.EntryChannel,
+			Login:       ch,
+			DisplayName: ch,
+			IsFavorite:  true,
+			IsLive:      false,
+		}
+	}
+	displayName := md.Author
+	if displayName == "" {
+		displayName = ch
+	}
+	return ui.DiscoveryEntry{
+		Kind:        ui.EntryChannel,
+		Login:       ch,
+		DisplayName: displayName,
+		Title:       md.Title,
+		Category:    md.Category,
+		ViewerCount: md.ViewerCount,
+		StartedAt:   md.StartedAt,
+		AvatarURL:   md.AvatarURL,
+		IsFavorite:  true,
+		IsLive:      !md.StartedAt.IsZero(),
+	}
+}
+
 func channelEntry(r twitch.ChannelResult, favSet map[string]bool, isLive bool) ui.DiscoveryEntry {
 	return ui.DiscoveryEntry{
 		Kind:        ui.EntryChannel,

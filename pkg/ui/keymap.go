@@ -156,6 +156,10 @@ func (m Model) bindings() []Binding {
 				if m.refreshInterval > 0 && !m.refreshing {
 					m.refreshCountdown = m.refreshInterval
 					m.refreshing = true
+					if m.mode == viewModeWatchList {
+						m = m.cancelWatchListLocked()
+						m.watchListEpoch++
+					}
 					if cmd := m.refreshCurrentView(); cmd != nil {
 						return m, cmd
 					}

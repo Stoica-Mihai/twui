@@ -46,10 +46,28 @@ const (
 
 // internal Bubble Tea messages
 type (
-	watchListResultMsg struct {
-		entries   []DiscoveryEntry
+	// watchListStartedMsg carries the live stream channel and its cancel
+	// function from a loadWatchList Cmd back into the model so subsequent
+	// reads can re-arm against it.
+	watchListStartedMsg struct {
+		ch        <-chan DiscoveryEntry
+		cancel    context.CancelFunc
+		epoch     int
+		refreshed bool
+	}
+	// watchListEntryMsg fires once per favorite as its metadata resolves.
+	watchListEntryMsg struct {
+		entry     DiscoveryEntry
+		epoch     int
+		refreshed bool
+	}
+	// watchListDoneMsg fires when the stream channel closes, or when setup
+	// fails (err set). The epoch guards against stale streams that were
+	// superseded by a newer load.
+	watchListDoneMsg struct {
+		epoch     int
+		refreshed bool
 		err       error
-		refreshed bool // true when triggered by auto-refresh; cursor preserved
 	}
 	searchResultMsg struct {
 		query     string
@@ -123,7 +141,16 @@ type Model struct {
 	symbols Symbols
 
 	// data per view
-	watchList        []DiscoveryEntry
+	watchList []DiscoveryEntry
+	// watchListStream is the live channel of a streaming load — readers re-arm
+	// against it on every watchListEntryMsg. Cleared on done/stale.
+	watchListStream <-chan DiscoveryEntry
+	// watchListCancel cancels the context backing the current stream. Called
+	// when the stream is superseded (refresh mid-load) or when it completes
+	// naturally, so the in-flight fan-out goroutines shut down promptly.
+	watchListCancel context.CancelFunc
+	// watchListEpoch is bumped on every new load so stale msgs are dropped.
+	watchListEpoch   int
 	browseList       []DiscoveryEntry
 	browseNextCursor string
 	searchList       []DiscoveryEntry
@@ -194,6 +221,10 @@ func NewModel(fns DiscoveryFuncs, theme Theme, refreshInterval time.Duration) *M
 		cancel:           cancel,
 		refreshInterval:  refreshInterval,
 		refreshCountdown: refreshInterval,
+		// Spinner is on from process start until the streaming watch-list load
+		// completes; watchListDoneMsg clears it via finishAsync.
+		loading:        true,
+		watchListEpoch: 1,
 	}
 }
 
@@ -246,7 +277,7 @@ func (m *Model) finishAsync(refreshed bool, err error) {
 
 // Init implements tea.Model (bubbletea v2: returns tea.Cmd).
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadWatchList(), titleScrollCmd()}
+	cmds := []tea.Cmd{m.loadWatchList(false), titleScrollCmd()}
 	if m.refreshInterval > 0 {
 		cmds = append(cmds, tickCmd())
 	}
@@ -270,15 +301,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
 
-	case watchListResultMsg:
-		m.finishAsync(msg.refreshed, msg.err)
-		if msg.err == nil {
-			prev := m.cursorLogin(viewModeWatchList)
-			m.watchList = sortLiveFirst(m.filterIgnored(msg.entries))
-			if msg.refreshed && m.mode == viewModeWatchList {
-				m.cursor = findEntryByLogin(m.watchList, prev)
-			}
+	case watchListStartedMsg:
+		if msg.epoch != m.watchListEpoch {
+			// Stale stream (superseded by a newer load); cancel it so the
+			// producer goroutine exits instead of blocking on `out <-`.
+			msg.cancel()
+			return m, nil
 		}
+		m.watchListStream = msg.ch
+		m.watchListCancel = msg.cancel
+		return m, readWatchListEntry(msg.ch, msg.epoch, msg.refreshed)
+
+	case watchListEntryMsg:
+		if msg.epoch != m.watchListEpoch {
+			return m, nil
+		}
+		prev := m.cursorLogin(viewModeWatchList)
+		m.watchList = sortLiveFirst(m.filterIgnored(mergeWatchListEntry(m.watchList, msg.entry)))
+		if m.mode == viewModeWatchList {
+			m.cursor = findEntryByLogin(m.watchList, prev)
+		}
+		return m, readWatchListEntry(m.watchListStream, msg.epoch, msg.refreshed)
+
+	case watchListDoneMsg:
+		if msg.epoch != m.watchListEpoch {
+			return m, nil
+		}
+		m.finishAsync(msg.refreshed, msg.err)
+		m = m.cancelWatchListLocked()
 		return m, nil
 
 	case searchResultMsg:
@@ -381,6 +431,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.refreshCountdown <= 0 {
 			m.refreshCountdown = m.refreshInterval
 			m.refreshing = true
+			if m.mode == viewModeWatchList {
+				m = m.cancelWatchListLocked()
+				m.watchListEpoch++
+			}
 			if cmd := m.refreshCurrentView(); cmd != nil {
 				return m, tea.Batch(tickCmd(), cmd)
 			}
@@ -974,18 +1028,64 @@ func (m Model) filterIgnored(entries []DiscoveryEntry) []DiscoveryEntry {
 
 // --- Commands ---
 
-// loadWatchList returns a Cmd that fetches the favorites view. The caller
-// should set m.loading = true if the spinner is desired — a value-receiver
-// method can't mutate the Model that the event loop will actually use.
-func (m Model) loadWatchList() tea.Cmd {
+// loadWatchList returns a Cmd that starts a streaming watch-list load.
+// Rather than blocking until every favorite resolves, it opens the stream
+// channel from fns.WatchList and hands it back to the event loop via
+// watchListStartedMsg; subsequent entries arrive one at a time via
+// readWatchListEntry. The cancel func rides along in the started msg so the
+// event loop can shut the stream down on refresh or teardown.
+func (m Model) loadWatchList(refreshed bool) tea.Cmd {
 	ctx := m.ctx
 	fns := m.fns
+	epoch := m.watchListEpoch
 	return func() tea.Msg {
 		c, cancel := context.WithTimeout(ctx, timeoutBrowse)
-		defer cancel()
-		entries, err := fns.WatchList(c)
-		return watchListResultMsg{entries: entries, err: err}
+		ch, err := fns.WatchList(c)
+		if err != nil {
+			cancel()
+			return watchListDoneMsg{epoch: epoch, refreshed: refreshed, err: err}
+		}
+		return watchListStartedMsg{ch: ch, cancel: cancel, epoch: epoch, refreshed: refreshed}
 	}
+}
+
+// readWatchListEntry returns a one-shot Cmd that reads the next entry from
+// the streaming watch-list channel. On close it emits watchListDoneMsg; the
+// Update handler is responsible for re-arming it after each entry.
+func readWatchListEntry(ch <-chan DiscoveryEntry, epoch int, refreshed bool) tea.Cmd {
+	return func() tea.Msg {
+		entry, ok := <-ch
+		if !ok {
+			return watchListDoneMsg{epoch: epoch, refreshed: refreshed}
+		}
+		return watchListEntryMsg{entry: entry, epoch: epoch, refreshed: refreshed}
+	}
+}
+
+// mergeWatchListEntry replaces the channel entry with matching Login in place
+// if present, else appends. Used on each streaming entry so a refresh updates
+// rows without clearing the list first (prevents blink + preserves cursor).
+func mergeWatchListEntry(list []DiscoveryEntry, entry DiscoveryEntry) []DiscoveryEntry {
+	for i := range list {
+		if list[i].Kind == EntryChannel && list[i].Login == entry.Login {
+			list[i] = entry
+			return list
+		}
+	}
+	return append(list, entry)
+}
+
+// cancelWatchListLocked cancels the in-flight watch-list stream and clears
+// its handles. Safe to call when no stream is active. Named "...Locked"
+// because the caller holds the Model (Bubble Tea's single-writer invariant);
+// no mutex is involved.
+func (m Model) cancelWatchListLocked() Model {
+	if m.watchListCancel != nil {
+		m.watchListCancel()
+		m.watchListCancel = nil
+	}
+	m.watchListStream = nil
+	return m
 }
 
 // loadBrowse returns a Cmd that fetches the top-level category list. See
@@ -1021,7 +1121,7 @@ func (m Model) loadCategoryStreams(category, cursor string, appendMode bool) tea
 func (m Model) loadCurrentView() tea.Cmd {
 	switch m.mode {
 	case viewModeWatchList:
-		return m.loadWatchList()
+		return m.loadWatchList(false)
 	case viewModeBrowse:
 		if len(m.categoryStack) == 0 && len(m.browseList) == 0 {
 			return m.loadBrowse()
@@ -1041,12 +1141,7 @@ func (m Model) refreshCurrentView() tea.Cmd {
 	fns := m.fns
 	switch m.mode {
 	case viewModeWatchList:
-		return func() tea.Msg {
-			c, cancel := context.WithTimeout(ctx, timeoutBrowse)
-			defer cancel()
-			entries, err := fns.WatchList(c)
-			return watchListResultMsg{entries: entries, err: err, refreshed: true}
-		}
+		return m.loadWatchList(true)
 	case viewModeBrowse:
 		if len(m.categoryStack) > 0 {
 			category := m.categoryStack[len(m.categoryStack)-1]

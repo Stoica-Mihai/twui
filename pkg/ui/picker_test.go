@@ -23,11 +23,12 @@ type mockState struct {
 // mockFns returns a complete DiscoveryFuncs wired to the given state.
 func mockFns(state *mockState) DiscoveryFuncs {
 	return DiscoveryFuncs{
-		WatchList: func(ctx context.Context) ([]DiscoveryEntry, error) {
-			return []DiscoveryEntry{
-				{Kind: EntryChannel, Login: "streamer1", DisplayName: "Streamer1", IsLive: true},
-				{Kind: EntryChannel, Login: "streamer2", DisplayName: "Streamer2", IsLive: false},
-			}, nil
+		WatchList: func(ctx context.Context) (<-chan DiscoveryEntry, error) {
+			out := make(chan DiscoveryEntry, 2)
+			out <- DiscoveryEntry{Kind: EntryChannel, Login: "streamer1", DisplayName: "Streamer1", IsLive: true}
+			out <- DiscoveryEntry{Kind: EntryChannel, Login: "streamer2", DisplayName: "Streamer2", IsLive: false}
+			close(out)
+			return out, nil
 		},
 		Search: func(ctx context.Context, query string) ([]DiscoveryEntry, error) {
 			return nil, nil
@@ -71,10 +72,14 @@ func mockFns(state *mockState) DiscoveryFuncs {
 }
 
 // newTestModel creates a Model with mock callbacks. Auto-refresh disabled.
+// NewModel sets loading=true so the spinner is on until the streaming
+// watch-list load finishes; tests that don't exercise the load path start
+// from the post-load state.
 func newTestModel(state *mockState) Model {
 	m := NewModel(mockFns(state), DefaultTheme(), 0)
 	m.width = 120
 	m.height = 30
+	m.loading = false
 	return *m
 }
 
@@ -115,7 +120,19 @@ func updateKey(m Model, key string) Model {
 
 // --- Message-based tests ---
 
-func TestModel_WatchListResult_SortsLiveFirstByViewers(t *testing.T) {
+// streamEntries pushes a sequence of watchListEntryMsgs through the model
+// at the current epoch and returns the resulting model. Mirrors the runtime
+// flow where each metadata fetch drops one entry into the stream channel.
+func streamEntries(m Model, entries []DiscoveryEntry) Model {
+	epoch := m.watchListEpoch
+	for _, e := range entries {
+		newM, _ := m.Update(watchListEntryMsg{entry: e, epoch: epoch})
+		m = newM.(Model)
+	}
+	return m
+}
+
+func TestModel_WatchListStream_SortsLiveFirstByViewers(t *testing.T) {
 	state := &mockState{}
 	m := newTestModel(state)
 
@@ -126,40 +143,48 @@ func TestModel_WatchListResult_SortsLiveFirstByViewers(t *testing.T) {
 		{Kind: EntryChannel, Login: "d", IsLive: false},
 		{Kind: EntryChannel, Login: "e", IsLive: true, ViewerCount: 65500},
 	}
-	newM, _ := m.Update(watchListResultMsg{entries: entries, err: nil})
-	m2 := newM.(Model)
+	m = streamEntries(m, entries)
 
 	wantOrder := []string{"e", "b", "a", "c", "d"}
-	if len(m2.watchList) != len(wantOrder) {
-		t.Fatalf("watchList len = %d, want %d", len(m2.watchList), len(wantOrder))
+	if len(m.watchList) != len(wantOrder) {
+		t.Fatalf("watchList len = %d, want %d", len(m.watchList), len(wantOrder))
 	}
 	for i, want := range wantOrder {
-		if m2.watchList[i].Login != want {
-			t.Errorf("watchList[%d].Login = %q, want %q", i, m2.watchList[i].Login, want)
+		if m.watchList[i].Login != want {
+			t.Errorf("watchList[%d].Login = %q, want %q", i, m.watchList[i].Login, want)
 		}
 	}
 }
 
-func TestModel_WatchListResult_PopulatesList(t *testing.T) {
+func TestModel_WatchListStream_PopulatesIncrementally(t *testing.T) {
 	state := &mockState{}
 	m := newTestModel(state)
+	epoch := m.watchListEpoch
 
-	entries := []DiscoveryEntry{
-		{Kind: EntryChannel, Login: "chan1", IsLive: true},
-		{Kind: EntryChannel, Login: "chan2", IsLive: false},
+	seq := []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "alpha", IsLive: true, ViewerCount: 100},
+		{Kind: EntryChannel, Login: "beta", IsLive: false},
+		{Kind: EntryChannel, Login: "gamma", IsLive: true, ViewerCount: 500},
 	}
-	newM, _ := m.Update(watchListResultMsg{entries: entries, err: nil})
-	m2 := newM.(Model)
 
-	if len(m2.watchList) != 2 {
-		t.Errorf("watchList len = %d, want 2", len(m2.watchList))
+	for i, e := range seq {
+		newM, _ := m.Update(watchListEntryMsg{entry: e, epoch: epoch})
+		m = newM.(Model)
+		if len(m.watchList) != i+1 {
+			t.Fatalf("after %d entries: list len = %d, want %d", i+1, len(m.watchList), i+1)
+		}
 	}
-	if m2.watchList[0].Login != "chan1" {
-		t.Errorf("watchList[0].Login = %q, want %q", m2.watchList[0].Login, "chan1")
+
+	// After all three, gamma (live, 500) should outrank alpha (live, 100); beta (offline) trails.
+	wantOrder := []string{"gamma", "alpha", "beta"}
+	for i, want := range wantOrder {
+		if m.watchList[i].Login != want {
+			t.Errorf("final watchList[%d].Login = %q, want %q", i, m.watchList[i].Login, want)
+		}
 	}
 }
 
-func TestModel_WatchListResult_FiltersIgnored(t *testing.T) {
+func TestModel_WatchListStream_FiltersIgnored(t *testing.T) {
 	state := &mockState{ignored: []string{"ignored1"}}
 	m := newTestModel(state)
 
@@ -167,15 +192,98 @@ func TestModel_WatchListResult_FiltersIgnored(t *testing.T) {
 		{Kind: EntryChannel, Login: "ignored1", IsLive: true},
 		{Kind: EntryChannel, Login: "visible", IsLive: true},
 	}
-	newM, _ := m.Update(watchListResultMsg{entries: entries, err: nil})
-	m2 := newM.(Model)
+	m = streamEntries(m, entries)
 
-	if len(m2.watchList) != 1 {
-		t.Errorf("watchList len = %d, want 1 (ignored should be filtered)", len(m2.watchList))
+	if len(m.watchList) != 1 {
+		t.Errorf("watchList len = %d, want 1 (ignored should be filtered)", len(m.watchList))
 	}
-	if m2.watchList[0].Login != "visible" {
-		t.Errorf("expected visible channel, got %q", m2.watchList[0].Login)
+	if m.watchList[0].Login != "visible" {
+		t.Errorf("expected visible channel, got %q", m.watchList[0].Login)
 	}
+}
+
+func TestModel_WatchListStream_MergeByLoginOnRefresh(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	// Pre-seed as if an earlier stream completed.
+	m.watchList = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "alpha", IsLive: true, ViewerCount: 100},
+		{Kind: EntryChannel, Login: "beta", IsLive: true, ViewerCount: 50},
+	}
+
+	// A refresh stream delivers alpha with a bumped viewer count.
+	refresh := DiscoveryEntry{Kind: EntryChannel, Login: "alpha", IsLive: true, ViewerCount: 999}
+	newM, _ := m.Update(watchListEntryMsg{entry: refresh, epoch: m.watchListEpoch, refreshed: true})
+	m = newM.(Model)
+
+	if len(m.watchList) != 2 {
+		t.Fatalf("merge-by-login should not grow list; len = %d, want 2", len(m.watchList))
+	}
+	// alpha (999) now outranks beta (50), so alpha sorts to the top.
+	if m.watchList[0].Login != "alpha" || m.watchList[0].ViewerCount != 999 {
+		t.Errorf("alpha not updated in place: %+v", m.watchList[0])
+	}
+}
+
+func TestModel_WatchListStream_StaleEntryDropped(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.watchList = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "alpha", IsLive: true},
+	}
+	currentEpoch := m.watchListEpoch
+
+	// Entry from a superseded stream (wrong epoch) must not touch watchList.
+	stale := DiscoveryEntry{Kind: EntryChannel, Login: "ghost", IsLive: true}
+	newM, _ := m.Update(watchListEntryMsg{entry: stale, epoch: currentEpoch - 1})
+	m = newM.(Model)
+
+	if len(m.watchList) != 1 || m.watchList[0].Login != "alpha" {
+		t.Errorf("stale entry modified list: %+v", m.watchList)
+	}
+}
+
+func TestModel_WatchListStream_CursorPreservedMidStream(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.watchList = []DiscoveryEntry{
+		{Kind: EntryChannel, Login: "alpha", IsLive: true, ViewerCount: 200},
+		{Kind: EntryChannel, Login: "beta", IsLive: true, ViewerCount: 100},
+	}
+	m.mode = viewModeWatchList
+	m.cursor = 1 // pointing at "beta"
+
+	// A new entry streams in that would outrank beta on sort. Cursor should
+	// follow "beta" by login rather than stay at index 1 blindly.
+	newEntry := DiscoveryEntry{Kind: EntryChannel, Login: "gamma", IsLive: true, ViewerCount: 150}
+	newM, _ := m.Update(watchListEntryMsg{entry: newEntry, epoch: m.watchListEpoch})
+	m = newM.(Model)
+
+	// Expected order after sort: alpha(200), gamma(150), beta(100). Cursor
+	// should land on beta at index 2.
+	if m.watchList[m.cursor].Login != "beta" {
+		t.Errorf("cursor follows login: want beta at cursor %d, got %q (list=%v)",
+			m.cursor, m.watchList[m.cursor].Login, loginsOf(m.watchList))
+	}
+}
+
+func TestModel_WatchListDone_ClearsLoading(t *testing.T) {
+	state := &mockState{}
+	m := newTestModel(state)
+	m.loading = true // simulate the initial-load state NewModel produces.
+	newM, _ := m.Update(watchListDoneMsg{epoch: m.watchListEpoch})
+	m = newM.(Model)
+	if m.loading {
+		t.Errorf("loading not cleared after watchListDoneMsg")
+	}
+}
+
+func loginsOf(entries []DiscoveryEntry) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.Login
+	}
+	return out
 }
 
 func TestModel_SearchResult_FreshMsgApplied(t *testing.T) {
@@ -1082,28 +1190,27 @@ func TestModel_Tick_IgnoredWhenDisabled(t *testing.T) {
 	}
 }
 
-// Refresh result for the WatchList view must preserve cursor by login.
+// Refresh result for the WatchList view must preserve cursor by login even
+// as streaming entries change row ordering via sortLiveFirst.
 func TestModel_RefreshResult_PreservesCursorByLogin(t *testing.T) {
 	m := newTestModel(&mockState{})
 	m.mode = viewModeWatchList
 	m.watchList = []DiscoveryEntry{
-		{Kind: EntryChannel, Login: "a"},
-		{Kind: EntryChannel, Login: "b"},
-		{Kind: EntryChannel, Login: "c"},
+		{Kind: EntryChannel, Login: "a", IsLive: true, ViewerCount: 50},
+		{Kind: EntryChannel, Login: "b", IsLive: true, ViewerCount: 40},
+		{Kind: EntryChannel, Login: "c", IsLive: true, ViewerCount: 30},
 	}
 	m.cursor = 1 // pointing at "b"
 
-	// Refresh returns a reordered list — "b" is now at index 2.
-	newEntries := []DiscoveryEntry{
-		{Kind: EntryChannel, Login: "c"},
-		{Kind: EntryChannel, Login: "a"},
-		{Kind: EntryChannel, Login: "b"},
-	}
-	newM, _ := m.Update(watchListResultMsg{entries: newEntries, refreshed: true})
+	// Refresh stream delivers "c" with a bumped count that reorders it to the top.
+	// Cursor must stay with login "b" across the sort.
+	cRefresh := DiscoveryEntry{Kind: EntryChannel, Login: "c", IsLive: true, ViewerCount: 999}
+	newM, _ := m.Update(watchListEntryMsg{entry: cRefresh, epoch: m.watchListEpoch, refreshed: true})
 	m2 := newM.(Model)
 
-	if m2.cursor != 2 {
-		t.Errorf("cursor = %d, want 2 (should follow login 'b')", m2.cursor)
+	if m2.watchList[m2.cursor].Login != "b" {
+		t.Errorf("cursor follows login after re-sort: got %q, want %q (list=%v)",
+			m2.watchList[m2.cursor].Login, "b", loginsOf(m2.watchList))
 	}
 }
 
