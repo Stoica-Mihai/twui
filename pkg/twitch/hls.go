@@ -203,13 +203,13 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	newInner := &hls.HLSStream{
 		StreamURL: newURL,
 		Client:    oldInner.Client,
-		// LiveEdge=1 trims the first load of the new session down to the
-		// single newest segment. Inheriting the default (4) meant every
-		// bypass pulled ~8s of content before catching up to live, which
-		// stacked up behind the player's buffer and made mpv play in
-		// slow motion as it reconciled overlapping TS timestamps from
-		// the old and new sessions.
-		LiveEdge:            1,
+		// LiveEdge=2 balances two failure modes observed with the raw
+		// defaults: pulling all 4 segments (~8s) made mpv fall behind
+		// live and slow-mo through overlapping TS timestamps; pulling
+		// just 1 starved the stdin pipe between segment fetches and
+		// caused repeated micro-pauses. 2 gives one segment of buffer
+		// cushion while staying near live.
+		LiveEdge:            2,
 		SegmentStreamData:   oldInner.SegmentStreamData,
 		MaxPlaylistAttempts: oldInner.MaxPlaylistAttempts,
 		MaxSegmentAttempts:  oldInner.MaxSegmentAttempts,
