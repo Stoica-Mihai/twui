@@ -203,13 +203,14 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	newInner := &hls.HLSStream{
 		StreamURL: newURL,
 		Client:    oldInner.Client,
-		// LiveEdge=2 balances two failure modes observed with the raw
-		// defaults: pulling all 4 segments (~8s) made mpv fall behind
-		// live and slow-mo through overlapping TS timestamps; pulling
-		// just 1 starved the stdin pipe between segment fetches and
-		// caused repeated micro-pauses. 2 gives one segment of buffer
-		// cushion while staying near live.
-		LiveEdge:            2,
+		// LiveEdge=3 matches RFC 8216 §6.3.3: clients SHOULD NOT start
+		// live playback less than three target durations from the end
+		// of the playlist, to absorb the stall risk on the first few
+		// fetches. 4 (the default) made mpv fall behind live and slow-mo
+		// through overlapping TS timestamps across bypasses; 1 starved
+		// the stdin pipe between fetches and caused micro-pauses. 3 is
+		// the conservative-but-not-excessive middle ground.
+		LiveEdge:            3,
 		SegmentStreamData:   oldInner.SegmentStreamData,
 		MaxPlaylistAttempts: oldInner.MaxPlaylistAttempts,
 		MaxSegmentAttempts:  oldInner.MaxSegmentAttempts,
