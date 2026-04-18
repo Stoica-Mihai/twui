@@ -26,7 +26,9 @@ type Player struct {
 
 // buildArgs assembles the command-line arguments for the configured player,
 // including the leading "-" stdin marker, any player-specific title/terminal
-// flags, and the caller's extra Args appended at the end.
+// flags, and the caller's extra Args appended at the end. User-provided Args
+// come last so they override any defaults we inject (mpv/vlc take the later
+// value on repeated flags).
 func (p *Player) buildArgs() []string {
 	args := []string{"-"} // read from stdin
 
@@ -44,6 +46,21 @@ func (p *Player) buildArgs() []string {
 	}
 	if p.AudioOnly && strings.Contains(base, "mpv") {
 		args = append(args, "--vid=no", "--force-window")
+	}
+	// Default player cache: the piped HLS feed can stall briefly during
+	// an ad-break bypass (new HLS session spins up before bytes flow),
+	// and a larger cache absorbs that gap so playback stays smooth.
+	// Overridable via --player-args (both players take the later value
+	// on repeated flags).
+	switch {
+	case strings.Contains(base, "mpv"):
+		args = append(args, "--cache=yes", "--cache-secs=10")
+	case strings.Contains(base, "vlc"):
+		// VLC's cache knobs take milliseconds. stdin goes through the
+		// file-caching path; network-caching is also bumped so any
+		// variant that VLC classifies as network-like gets the same
+		// buffer.
+		args = append(args, "--file-caching=10000", "--network-caching=10000")
 	}
 
 	return append(args, p.Args...)

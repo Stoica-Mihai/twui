@@ -99,6 +99,33 @@ func TestBuildArgs_AbsolutePathBinaryMatch(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_MPVCacheDefaults(t *testing.T) {
+	args := (&Player{Path: "mpv"}).buildArgs()
+	for _, want := range []string{"--cache=yes", "--cache-secs=10"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("mpv args should include %q by default, got %v", want, args)
+		}
+	}
+}
+
+func TestBuildArgs_VLCCacheDefaults(t *testing.T) {
+	args := (&Player{Path: "vlc"}).buildArgs()
+	for _, want := range []string{"--file-caching=10000", "--network-caching=10000"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("vlc args should include %q by default, got %v", want, args)
+		}
+	}
+}
+
+func TestBuildArgs_UserArgsOverrideCacheDefaults(t *testing.T) {
+	// User can tune cache via --player-args; their values come last and
+	// win on both mpv and vlc.
+	mpv := (&Player{Path: "mpv", Args: []string{"--cache-secs=30"}}).buildArgs()
+	if last := mpv[len(mpv)-1]; last != "--cache-secs=30" {
+		t.Errorf("user --cache-secs should be last arg to win, got %v", mpv)
+	}
+}
+
 func TestBuildArgs_UnknownBinaryGetsNoPlayerSpecificFlags(t *testing.T) {
 	// Unrecognized player: should still include "-" and extra args, but no
 	// mpv/vlc-specific synthesis.
@@ -116,7 +143,12 @@ func TestBuildArgs_UnknownBinaryGetsNoPlayerSpecificFlags(t *testing.T) {
 	if !slices.Contains(args, "extra") {
 		t.Errorf("unknown player should still get extra Args, got %v", args)
 	}
-	for _, bad := range []string{"--force-media-title=s", "--meta-title=s", "--no-terminal", "--vid=no", "--force-window"} {
+	for _, bad := range []string{
+		"--force-media-title=s", "--meta-title=s",
+		"--no-terminal", "--vid=no", "--force-window",
+		"--cache=yes", "--cache-secs=10",
+		"--file-caching=10000", "--network-caching=10000",
+	} {
 		if slices.Contains(args, bad) {
 			t.Errorf("unknown player should not emit %q, got %v", bad, args)
 		}
