@@ -132,6 +132,14 @@ func (h *HLSStream) SetOnDrop(fn func(error)) {
 	h.dropMu.Unlock()
 }
 
+// Cancel signals the worker and writer goroutines started by Open to exit.
+// Safe to call before Open (no-op) and after Close.
+func (h *HLSStream) Cancel() {
+	if h.cancel != nil {
+		h.cancel()
+	}
+}
+
 // Open starts the HLS stream and returns an io.ReadCloser that produces
 // the concatenated segment data.
 func (h *HLSStream) Open() (io.ReadCloser, error) {

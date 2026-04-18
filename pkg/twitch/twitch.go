@@ -3,6 +3,7 @@ package twitch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,11 +43,39 @@ func New(client *http.Client, api *TwitchAPI, usher *UsherService) *TwitchClient
 
 // Streams returns available HLS stream variants for a live channel.
 func (t *TwitchClient) Streams(ctx context.Context, channel string) (map[string]stream.Stream, error) {
+	master, restricted, err := t.fetchMaster(ctx, channel)
+	if err != nil {
+		return nil, err
+	}
+
+	streams, err := t.buildStreams(ctx, master, restricted)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wire an ad-bypass refresher that can re-enter the master-playlist
+	// fetch and return the fresh variant URL for a given quality. The
+	// bypass hook calls this to rebuild the inner HLS pipeline in place.
+	for name, s := range streams {
+		if tw := extractTwitchHLS(s); tw != nil {
+			quality := name
+			tw.RefreshURL = func(ctx context.Context) (string, error) {
+				return t.refreshVariantURL(ctx, channel, quality)
+			}
+		}
+	}
+
+	return streams, nil
+}
+
+// fetchMaster is the token + master-playlist half of Streams, factored out
+// so refreshVariantURL can re-enter it without rebuilding stream objects.
+func (t *TwitchClient) fetchMaster(ctx context.Context, channel string) (*hls.MasterPlaylist, []string, error) {
 	t.ensureTransportWithHeaders()
 
 	tokenResp, err := t.api.AccessToken(ctx, channel)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	restricted := parseRestrictedBitrates(tokenResp.Token)
@@ -63,10 +92,38 @@ func (t *TwitchClient) Streams(ctx context.Context, channel string) (map[string]
 
 	master, err := t.fetchMasterPlaylist(ctx, masterURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return t.buildStreams(ctx, master, restricted)
+	return master, restricted, nil
+}
+
+// refreshVariantURL fetches a fresh access token and master playlist for
+// channel and returns the variant URL matching quality. Used by
+// TwitchHLSStream.BypassAdBreak to relocate mpv onto a new session timeline.
+func (t *TwitchClient) refreshVariantURL(ctx context.Context, channel, quality string) (string, error) {
+	master, _, err := t.fetchMaster(ctx, channel)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range master.Variants {
+		if variantName(v) == quality && v.URL != "" {
+			return v.URL, nil
+		}
+	}
+	return "", fmt.Errorf("twitch: quality %q not found on refresh", quality)
+}
+
+// extractTwitchHLS returns the *TwitchHLSStream inside s, if s is a non-muxed
+// annotatedStream. Returns nil for muxed streams (bypass not yet supported
+// there) or other wrappers.
+func extractTwitchHLS(s stream.Stream) *TwitchHLSStream {
+	as, ok := s.(*annotatedStream)
+	if !ok {
+		return nil
+	}
+	tw, _ := as.Stream.(*TwitchHLSStream)
+	return tw
 }
 
 // Metadata fetches stream metadata for a channel.
@@ -375,4 +432,15 @@ func (a *annotatedStream) SetOnPreRoll(fn func()) {
 	}
 }
 
+// BypassAdBreak forwards to the inner stream when it implements AdBypasser.
+// Muxed streams currently return an error — bypass would need to re-sync two
+// HLS pipelines, and we haven't built that yet.
+func (a *annotatedStream) BypassAdBreak(ctx context.Context) error {
+	if b, ok := a.Stream.(stream.AdBypasser); ok {
+		return b.BypassAdBreak(ctx)
+	}
+	return errors.New("twitch: ad-break bypass not supported on this stream")
+}
+
 var _ stream.StreamInfoProvider = (*annotatedStream)(nil)
+var _ stream.AdBypasser = (*annotatedStream)(nil)

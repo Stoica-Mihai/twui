@@ -1,12 +1,16 @@
 package twitch
 
 import (
+	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/mcs/twui/pkg/stream"
 	"github.com/mcs/twui/pkg/stream/hls"
 )
 
@@ -46,6 +50,21 @@ type TwitchHLSStream struct {
 	OnAdBreak func(duration float64, adType string)
 	OnAdEnd   func()
 	OnPreRoll func()
+
+	// RefreshURL, when set, returns a freshly-tokened playlist URL for the
+	// same channel/quality. BypassAdBreak calls it to rebuild the inner
+	// HLS pipeline on the fly.
+	RefreshURL func(ctx context.Context) (string, error)
+
+	// outer is the FilteredStream the consumer (mpv) actually reads from.
+	// Stays constant across bypass swaps so pause/resume keeps addressing
+	// the single reader the player holds; the embedded HLSStream.Filtered
+	// drifts out of date after a swap and must not be used for control.
+	outer *stream.FilteredStream
+
+	// bypassing is held for the duration of a BypassAdBreak call to serialize
+	// concurrent attempts (e.g. overlapping ad-break notifications).
+	bypassing sync.Mutex
 }
 
 // SetOnAdBreak implements stream.AdBreakNotifier.
@@ -79,14 +98,111 @@ func NewTwitchHLSStream(hlsStream *hls.HLSStream, lowLatency bool) *TwitchHLSStr
 		AdIDPrefixes:    []string{"stitched-ad-"},
 	}
 
-	hlsStream.ProcessSegments = t.processSegments
-	hlsStream.ShouldFilter = t.shouldFilter
-	hlsStream.OnOpen = func() {
+	t.wireHooks(hlsStream)
+	return t
+}
+
+// wireHooks attaches the TwitchHLSStream's ad-detection hooks onto an
+// inner HLSStream. Called both by NewTwitchHLSStream and BypassAdBreak
+// so the freshly-built inner stream routes callbacks back to this wrapper.
+func (t *TwitchHLSStream) wireHooks(h *hls.HLSStream) {
+	h.ProcessSegments = t.processSegments
+	h.ShouldFilter = t.shouldFilter
+	h.OnOpen = func() {
 		slog.Info("Will skip ad segments")
 	}
-	hlsStream.OnPlaylistParsed = t.onPlaylistParsed
+	h.OnPlaylistParsed = t.onPlaylistParsed
+}
 
-	return t
+// Open starts the inner HLS pipeline and records the returned FilteredStream
+// as the outer reader — the one the player holds and the one pause/resume
+// must address even after a BypassAdBreak swap.
+func (t *TwitchHLSStream) Open() (io.ReadCloser, error) {
+	rc, err := t.HLSStream.Open()
+	if err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.outer = t.HLSStream.Filtered
+	t.mu.Unlock()
+	return rc, nil
+}
+
+// outerFiltered returns the FilteredStream the consumer is reading from —
+// either the outer one recorded on Open (post-swap-safe) or, before the
+// first Open, the embedded HLSStream.Filtered as a best-effort fallback.
+func (t *TwitchHLSStream) outerFiltered() *stream.FilteredStream {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.outer != nil {
+		return t.outer
+	}
+	return t.HLSStream.Filtered
+}
+
+// BypassAdBreak rebuilds the inner HLS pipeline against a freshly-tokened
+// playlist URL and swaps it under the existing FilteredStream. The consumer
+// (mpv) keeps its pipe open across the swap — it just starts receiving bytes
+// from a new Twitch session that may not have the current ad stitched in.
+//
+// Requires RefreshURL to be set. Concurrent calls serialize on t.bypassing.
+func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
+	if t.RefreshURL == nil {
+		return errors.New("twitch: BypassAdBreak requires RefreshURL")
+	}
+
+	t.bypassing.Lock()
+	defer t.bypassing.Unlock()
+
+	outer := t.outerFiltered()
+	if outer == nil {
+		return errors.New("twitch: BypassAdBreak called before Open")
+	}
+
+	newURL, err := t.RefreshURL(ctx)
+	if err != nil {
+		return err
+	}
+
+	t.mu.Lock()
+	oldInner := t.HLSStream
+	t.mu.Unlock()
+
+	newInner := &hls.HLSStream{
+		StreamURL:           newURL,
+		Client:              oldInner.Client,
+		LiveEdge:            oldInner.LiveEdge,
+		SegmentStreamData:   oldInner.SegmentStreamData,
+		MaxPlaylistAttempts: oldInner.MaxPlaylistAttempts,
+		MaxSegmentAttempts:  oldInner.MaxSegmentAttempts,
+		Ctx:                 oldInner.Ctx,
+	}
+	t.wireHooks(newInner)
+
+	newReader, err := newInner.Open()
+	if err != nil {
+		return err
+	}
+
+	// Clear ad-detection state before the new inner's worker goroutines
+	// can start calling processSegments against it.
+	t.mu.Lock()
+	t.HLSStream = newInner
+	t.dateRanges = nil
+	t.cachedAdDateRanges = nil
+	t.adBreaks = nil
+	t.lastWasAd = false
+	t.hadContent = false
+	t.adNotified = false
+	t.mu.Unlock()
+
+	// SwapReader closes the old pipe reader (unblocking any in-flight
+	// Read). Cancel the old inner explicitly so its worker/writer
+	// goroutines exit rather than spinning on a closed pipe.
+	outer.SwapReader(newReader)
+	oldInner.Cancel()
+
+	return nil
 }
 
 func (t *TwitchHLSStream) onPlaylistParsed(playlist *hls.MediaPlaylist) {
@@ -180,8 +296,8 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 	if isAd {
 		if !lastWasAd {
 			slog.Debug("Filtering ad segment", "num", seg.Num, "title", seg.Title)
-			if t.Filtered != nil {
-				t.Filtered.Pause()
+			if f := t.outerFiltered(); f != nil {
+				f.Pause()
 			}
 		}
 		t.mu.Lock()
@@ -191,8 +307,8 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 	}
 
 	if lastWasAd {
-		if t.Filtered != nil {
-			t.Filtered.Resume()
+		if f := t.outerFiltered(); f != nil {
+			f.Resume()
 		}
 		if onAdEnd != nil {
 			onAdEnd()

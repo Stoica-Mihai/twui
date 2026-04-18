@@ -1,6 +1,9 @@
 package stream
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 // Stream is the core interface for media streams.
 type Stream interface {
@@ -48,4 +51,12 @@ type AdEndNotifier interface {
 // signal when a pre-roll ad is detected before any content has played.
 type PreRollNotifier interface {
 	SetOnPreRoll(fn func())
+}
+
+// AdBypasser is an optional interface implemented by streams that can
+// refresh their underlying source in place (new session / token / playlist)
+// without signalling EOF to the consumer. Used to try to skip mid-roll ads
+// by moving the player onto a freshly-stitched timeline.
+type AdBypasser interface {
+	BypassAdBreak(ctx context.Context) error
 }
