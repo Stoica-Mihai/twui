@@ -415,7 +415,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// the pump is running — faster than the ~2-4s playlist refresh
 			// so we sample more Twitch sessions per second. Single-flight
 			// drops ticks that collide with an already-running fetch.
-			const adEndDebounce = 5 * time.Minute
+			const adEndDebounce = 2 * time.Minute
 			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
 			var (
@@ -466,6 +466,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 						pumpStop = nil
 						adNotifyMu.Unlock()
 						if stop != nil {
+							slog.Info("Ad-break pump stopped", "channel", channel)
 							close(stop)
 						}
 					})
@@ -491,6 +492,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 						default:
 						}
 						if wasIn {
+							slog.Info("Ad-break notify end fired", "channel", channel)
 							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
 						}
 					})
