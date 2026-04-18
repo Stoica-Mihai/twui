@@ -184,15 +184,20 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 		return err
 	}
 
-	// Clear ad-detection state before the new inner's worker goroutines
-	// can start calling processSegments against it.
+	// Clear playlist-scoped state (date ranges, break IDs) so the new
+	// inner's ad detection starts fresh. Hold lastWasAd at true across
+	// the swap: the outer FilteredStream was paused by shouldFilter when
+	// the old session entered the ad, and the paused flag survives the
+	// swap. Forcing lastWasAd=true means the new session's first non-ad
+	// segment trips the Resume + OnAdEnd branch, returning mpv and the
+	// UI to playback cleanly — without this, shouldFilter would treat
+	// the content as always-ad-free and never call Resume.
 	t.mu.Lock()
 	t.HLSStream = newInner
 	t.dateRanges = nil
 	t.cachedAdDateRanges = nil
 	t.adBreaks = nil
-	t.lastWasAd = false
-	t.hadContent = false
+	t.lastWasAd = true
 	t.adNotified = false
 	t.mu.Unlock()
 

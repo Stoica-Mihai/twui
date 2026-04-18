@@ -401,6 +401,20 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				abn.SetOnAdBreak(func(duration float64, adType string) {
 					notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
 					send(ui.StatusAdBreak, "")
+
+					// Try to skip the ad by swapping the HLS session under
+					// the player. Runs in its own goroutine so the HLS
+					// worker thread that fired this callback isn't blocked
+					// on the token+playlist fetch.
+					if bypasser, ok := s.(stream.AdBypasser); ok {
+						go func() {
+							if err := bypasser.BypassAdBreak(c); err != nil {
+								slog.Warn("Ad-break bypass failed", "channel", channel, "err", err)
+								return
+							}
+							slog.Info("Ad-break bypass applied", "channel", channel)
+						}()
+					}
 				})
 			}
 			if aen, ok := s.(stream.AdEndNotifier); ok {
