@@ -402,12 +402,39 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// a single real event. Collapse them into one "Ad break" at
 			// the start of the bypass cycle and one "Ad break ended" once
 			// no new detection has arrived for adEndDebounce.
+			//
+			// bypassPumpInterval is how often we retry BypassAdBreak while
+			// in an ad break — faster than the ~2-4s playlist refresh so
+			// we sample more Twitch sessions per second, each of which
+			// might happen to have content at its live edge while the
+			// current one doesn't. The bypass's single-flight guard drops
+			// ticks that collide with an already-running fetch, so this
+			// doesn't stack up overlapping requests.
 			const adEndDebounce = 15 * time.Second
+			const bypassPumpInterval = 1 * time.Second
 			var (
 				adNotifyMu sync.Mutex
 				inAdBreak  bool
 				endTimer   *time.Timer
+				pumpStop   chan struct{}
 			)
+
+			bypasser, _ := s.(stream.AdBypasser)
+			runBypass := func() {
+				if bypasser == nil {
+					return
+				}
+				err := bypasser.BypassAdBreak(c)
+				switch {
+				case err == nil:
+					slog.Info("Ad-break bypass applied", "channel", channel)
+				case errors.Is(err, twitch.ErrBypassInFlight),
+					errors.Is(err, twitch.ErrBypassPreContent):
+					slog.Debug("Ad-break bypass skipped", "channel", channel, "reason", err)
+				default:
+					slog.Warn("Ad-break bypass failed", "channel", channel, "err", err)
+				}
+			}
 
 			// Wire up notification hooks before opening.
 			if abn, ok := s.(stream.AdBreakNotifier); ok {
@@ -424,34 +451,51 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 						adNotifyMu.Lock()
 						wasIn := inAdBreak
 						inAdBreak = false
+						stop := pumpStop
+						pumpStop = nil
 						adNotifyMu.Unlock()
+						if stop != nil {
+							close(stop)
+						}
 						if wasIn {
 							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
 						}
 					})
+					// Start the bypass pump if this is the first detection
+					// of the current ad break. The pump fires BypassAdBreak
+					// every bypassPumpInterval until the debounce timer
+					// above declares the break over.
+					var startPump bool
+					if firstOfBreak && bypasser != nil {
+						pumpStop = make(chan struct{})
+						startPump = true
+					}
+					stopCh := pumpStop
 					adNotifyMu.Unlock()
 
 					if firstOfBreak {
 						notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
 					}
 
-					// Try to skip the ad by swapping the HLS session under
-					// the player. Runs in its own goroutine so the HLS
-					// worker thread that fired this callback isn't blocked
-					// on the token+playlist fetch. Cooldown, single-flight,
-					// and preroll skips are expected throttles — debug-log
-					// them rather than surfacing as failures.
-					if bypasser, ok := s.(stream.AdBypasser); ok {
+					if startPump {
 						go func() {
-							err := bypasser.BypassAdBreak(c)
-							switch {
-							case err == nil:
-								slog.Info("Ad-break bypass applied", "channel", channel)
-							case errors.Is(err, twitch.ErrBypassInFlight),
-								errors.Is(err, twitch.ErrBypassPreContent):
-								slog.Debug("Ad-break bypass skipped", "channel", channel, "reason", err)
-							default:
-								slog.Warn("Ad-break bypass failed", "channel", channel, "err", err)
+							// Fire once immediately on first detection, then
+							// on the ticker. The HLS worker thread that
+							// fired this callback isn't blocked on the
+							// token+playlist fetch since runBypass runs
+							// in this goroutine.
+							runBypass()
+							ticker := time.NewTicker(bypassPumpInterval)
+							defer ticker.Stop()
+							for {
+								select {
+								case <-stopCh:
+									return
+								case <-c.Done():
+									return
+								case <-ticker.C:
+									runBypass()
+								}
 							}
 						}()
 					}
