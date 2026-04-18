@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type HTTPStream struct {
@@ -103,7 +104,7 @@ func (c *chunkReader) fetchNext() error {
 	if c.total == 0 {
 		if cr := resp.Header.Get("Content-Range"); cr != "" {
 			// format: "bytes start-end/total"
-			if i := lastIndex(cr, "/"); i >= 0 {
+			if i := strings.LastIndex(cr, "/"); i >= 0 {
 				if n, err := strconv.ParseInt(cr[i+1:], 10, 64); err == nil {
 					c.total = n
 				}
@@ -160,17 +161,6 @@ func (c *chunkReader) Close() error {
 		return err
 	}
 	return nil
-}
-
-// lastIndex returns the last index of sep in s, or -1.
-func lastIndex(s, sep string) int {
-	idx := -1
-	for i := 0; i <= len(s)-len(sep); i++ {
-		if s[i:i+len(sep)] == sep {
-			idx = i
-		}
-	}
-	return idx
 }
 
 func (h *HTTPStream) URL() string {

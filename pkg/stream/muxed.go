@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// muxedCleanupTimeout bounds how long Close() waits for the feeder
+// goroutines after FFmpeg has been killed. A hung pipe open would
+// otherwise block forever.
+const muxedCleanupTimeout = 10 * time.Second
+
 // MuxedStream combines a video and audio stream by muxing them through FFmpeg
 // using named pipes, producing a single mpegts output on stdout.
 type MuxedStream struct {
@@ -125,51 +130,34 @@ func (m *MuxedStream) Open() (io.ReadCloser, error) {
 		}
 	}()
 
-	// Feed video stream into the video named pipe.
-	go func() {
-		defer wg.Done()
-		f, err := OpenPipeWithTimeout(ctx, videoPipe, os.O_WRONLY, 0)
-		if err != nil {
-			slog.Error("Failed to open video pipe", "err", err)
-			select {
-			case errCh <- err:
-			default:
-			}
-			return
-		}
-		defer f.Close()
-		if _, err := io.Copy(f, videoReader); err != nil {
-			slog.Error("Failed to copy video stream", "err", err)
-			select {
-			case errCh <- err:
-			default:
-			}
-		}
-	}()
-
-	// Feed audio stream into the audio named pipe.
-	go func() {
-		defer wg.Done()
-		f, err := OpenPipeWithTimeout(ctx, audioPipe, os.O_WRONLY, 0)
-		if err != nil {
-			slog.Error("Failed to open audio pipe", "err", err)
-			select {
-			case errCh <- err:
-			default:
-			}
-			return
-		}
-		defer f.Close()
-		if _, err := io.Copy(f, audioReader); err != nil {
-			slog.Error("Failed to copy audio stream", "err", err)
-			select {
-			case errCh <- err:
-			default:
-			}
-		}
-	}()
+	go feedPipe(ctx, &wg, videoPipe, videoReader, errCh, "video")
+	go feedPipe(ctx, &wg, audioPipe, audioReader, errCh, "audio")
 
 	return mrc, nil
+}
+
+// feedPipe opens pipePath for writing (with timeout) and copies r into it.
+// Any error lands on errCh (non-blocking: the watcher only cares about the
+// first failure; drops here are intentional).
+func feedPipe(ctx context.Context, wg *sync.WaitGroup, pipePath string, r io.ReadCloser, errCh chan<- error, label string) {
+	defer wg.Done()
+	f, err := OpenPipeWithTimeout(ctx, pipePath, os.O_WRONLY, 0)
+	if err != nil {
+		slog.Error("Failed to open pipe", "stream", label, "err", err)
+		select {
+		case errCh <- err:
+		default:
+		}
+		return
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, r); err != nil {
+		slog.Error("Failed to copy stream", "stream", label, "err", err)
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
 }
 
 func (m *MuxedStream) URL() string {
@@ -205,8 +193,8 @@ func (m *muxedReadCloser) Close() error {
 	}()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		slog.Warn("muxed stream cleanup timed out after 10s")
+	case <-time.After(muxedCleanupTimeout):
+		slog.Warn("muxed stream cleanup timed out", "after", muxedCleanupTimeout)
 	}
 	os.RemoveAll(m.tmpDir)
 	return nil
