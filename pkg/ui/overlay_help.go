@@ -36,6 +36,8 @@ func (m Model) renderHelpOverlay() string {
 	bodyWidth := maxKey + maxDesc + colPad*4
 	w := overlayWidth(title, bodyWidth)
 
+	keyStyle := lipgloss.NewStyle().Padding(0, colPad).Inherit(m.styles.title)
+	descStyle := lipgloss.NewStyle().Padding(0, colPad).Inherit(m.styles.text)
 	t := table.New().
 		Border(lipgloss.NormalBorder()).
 		BorderTop(false).BorderBottom(false).
@@ -44,11 +46,10 @@ func (m Model) renderHelpOverlay() string {
 		BorderHeader(false).
 		Width(w).
 		StyleFunc(func(_, col int) lipgloss.Style {
-			base := lipgloss.NewStyle().Padding(0, colPad)
 			if col == 0 {
-				return base.Inherit(m.styles.title)
+				return keyStyle
 			}
-			return base.Inherit(m.styles.text)
+			return descStyle
 		}).
 		Rows(rows...)
 

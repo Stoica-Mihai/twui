@@ -46,24 +46,21 @@ const (
 
 // internal Bubble Tea messages
 type (
-	// watchListStartedMsg carries the live stream channel and its cancel
-	// function from a loadWatchList Cmd back into the model so subsequent
-	// reads can re-arm against it.
+	// watchListStartedMsg carries the producer's cancel so a superseded
+	// stream can be aborted before the model stores it.
 	watchListStartedMsg struct {
 		ch        <-chan DiscoveryEntry
 		cancel    context.CancelFunc
 		epoch     int
 		refreshed bool
 	}
-	// watchListEntryMsg fires once per favorite as its metadata resolves.
 	watchListEntryMsg struct {
 		entry     DiscoveryEntry
 		epoch     int
 		refreshed bool
 	}
-	// watchListDoneMsg fires when the stream channel closes, or when setup
-	// fails (err set). The epoch guards against stale streams that were
-	// superseded by a newer load.
+	// watchListDoneMsg's epoch guards against stale streams superseded by a
+	// newer load.
 	watchListDoneMsg struct {
 		epoch     int
 		refreshed bool
@@ -221,10 +218,8 @@ func NewModel(fns DiscoveryFuncs, theme Theme, refreshInterval time.Duration) *M
 		cancel:           cancel,
 		refreshInterval:  refreshInterval,
 		refreshCountdown: refreshInterval,
-		// Spinner is on from process start until the streaming watch-list load
-		// completes; watchListDoneMsg clears it via finishAsync.
-		loading:        true,
-		watchListEpoch: 1,
+		loading:          true,
+		watchListEpoch:   1,
 	}
 }
 

@@ -590,12 +590,6 @@ func runDemoTUI(cmd *cobra.Command) error {
 	return nil
 }
 
-// channelEntry adapts a twitch.ChannelResult into a ui.DiscoveryEntry.
-// isLive is caller-supplied because Search relies on StartedAt presence while
-// CategoryStreams and RelatedChannels know the endpoint returns live streams.
-// buildFavoriteEntry resolves one favorite's metadata into a DiscoveryEntry.
-// Metadata errors degrade to an offline-fallback entry rather than propagating
-// — the UI still shows the login row, it just renders as offline.
 func buildFavoriteEntry(ctx context.Context, api *twitch.TwitchAPI, ch string) ui.DiscoveryEntry {
 	md, err := api.StreamMetadata(ctx, ch)
 	if err != nil {
@@ -626,6 +620,9 @@ func buildFavoriteEntry(ctx context.Context, api *twitch.TwitchAPI, ch string) u
 	}
 }
 
+// channelEntry adapts a twitch.ChannelResult into a ui.DiscoveryEntry.
+// isLive is caller-supplied because Search relies on StartedAt presence while
+// CategoryStreams and RelatedChannels know the endpoint returns live streams.
 func channelEntry(r twitch.ChannelResult, favSet map[string]bool, isLive bool) ui.DiscoveryEntry {
 	return ui.DiscoveryEntry{
 		Kind:        ui.EntryChannel,

@@ -27,12 +27,9 @@ func (m Model) renderRelatedOverlay() string {
 	} else {
 		title = fmt.Sprintf(" Related — %s ", m.overlayChannel)
 	}
-	// Width accommodates both the title and the longest possible hint row
-	// so none of them overhang when wrapped by overlayRow.
-	w := 50
-	if tw := uniseg.StringWidth(title); tw > w {
-		w = tw
-	}
+	// Width must also fit the "more in pool" hint row when visible, so
+	// overlayRow doesn't wrap it.
+	w := overlayWidth(title, 50)
 	if len(m.relatedStreams) > maxRelatedVisible {
 		hint := fmt.Sprintf(" · %d more in pool — ignore visible rows to reveal ", len(m.relatedStreams)-maxRelatedVisible)
 		if hw := uniseg.StringWidth(hint); hw > w {
