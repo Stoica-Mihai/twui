@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/mcs/twui/pkg/stream"
 	"github.com/mcs/twui/pkg/stream/hls"
@@ -75,22 +74,6 @@ func TestTwitchHLSStream_BypassAdBreak_SkipsPreroll(t *testing.T) {
 	err := s.BypassAdBreak(context.Background())
 	if !errors.Is(err, ErrBypassPreContent) {
 		t.Errorf("BypassAdBreak pre-content err = %v, want ErrBypassPreContent", err)
-	}
-}
-
-func TestTwitchHLSStream_BypassAdBreak_Cooldown(t *testing.T) {
-	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
-	s.BypassCooldown = time.Hour
-	s.hadContent = true
-	s.lastBypassAt = time.Now()
-	s.RefreshURL = func(ctx context.Context) (string, error) {
-		t.Fatal("RefreshURL must not run inside cooldown")
-		return "", nil
-	}
-
-	err := s.BypassAdBreak(context.Background())
-	if !errors.Is(err, ErrBypassCooldown) {
-		t.Errorf("BypassAdBreak cooldown err = %v, want ErrBypassCooldown", err)
 	}
 }
 
