@@ -242,8 +242,12 @@ func TestBridge_RewritesPCROnSwap(t *testing.T) {
 	}
 }
 
-func TestBridge_DifferentPIDsTrackedIndependently(t *testing.T) {
-	// Video PID 256 and audio PID 257 each need their own offset.
+func TestBridge_SharedOffsetPreservesAVSync(t *testing.T) {
+	// All PIDs share a single clock offset so the NEW session's
+	// internal A/V relationship (audio_pts - video_pts) carries
+	// through the swap unchanged. Previously, per-PID offsets
+	// forced the OLD session's A/V gap onto the new session's
+	// content, which drifted audio off of video.
 	preV := tsPacketWithPES(256, 10000)
 	preA := tsPacketWithPES(257, 50000)
 	postV := tsPacketWithPES(256, 100)
@@ -270,13 +274,19 @@ func TestBridge_DifferentPIDsTrackedIndependently(t *testing.T) {
 	post2 := make([]byte, tsPacketSize)
 	_, _ = io.ReadFull(b, post2)
 
-	// Video offset: 256's last PTS was 10000 → post = 10000+3000 = 13000.
-	if got := packetPTS(post1); got != 13000 {
-		t.Errorf("video post-swap PTS = %d, want 13000", got)
+	vPre := packetPTS(pre1)
+	aPre := packetPTS(pre2)
+	vPost := packetPTS(post1)
+	aPost := packetPTS(post2)
+
+	// A/V offset in the new session's raw PTS: 700 - 100 = 600.
+	// Must be preserved after rewriting.
+	if aPost-vPost != 600 {
+		t.Errorf("A/V gap changed: pre-rewrite was 600 (700-100), got %d (%d - %d)", aPost-vPost, aPost, vPost)
 	}
-	// Audio offset: 257's last PTS was 50000 → post = 50000+3000 = 53000.
-	if got := packetPTS(post2); got != 53000 {
-		t.Errorf("audio post-swap PTS = %d, want 53000", got)
+	// Sanity: pre-swap values unchanged.
+	if vPre != 10000 || aPre != 50000 {
+		t.Errorf("pre-swap PTS modified: video=%d audio=%d", vPre, aPre)
 	}
 }
 

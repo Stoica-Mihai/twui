@@ -41,43 +41,40 @@ type Bridge struct {
 
 	mu sync.Mutex
 
-	// lastPTS records the most recent PTS emitted on each PID. Used at
-	// the first post-swap packet to compute the offset that makes the
-	// new stream continue from that value.
-	lastPTS map[uint16]uint64
-	// lastPCRBase / lastPCRExt record the most recent PCR emitted on the
-	// PID that carries PCR (there's typically just one, the PMT's PCR
-	// PID, but we track per-PID for robustness).
-	lastPCRBase map[uint16]uint64
-	lastPCRExt  map[uint16]uint64
+	// lastClock is the most recent 90kHz clock value emitted, either
+	// a PCR_base or a PTS — whichever was seen most recently. One
+	// global value across all PIDs so audio and video share a single
+	// clock reference; preserves the new session's internal A/V sync
+	// unchanged across the swap.
+	lastClock uint64
+	// haveClock is true once we've seen any clock value on this stream.
+	// Before that, offsets can't be computed — we just pass bytes through.
+	haveClock bool
 
-	// pendingSwap is set by MarkSwap; the next packet seen on each PID
-	// computes and clears its offset entry.
+	// pendingSwap is set by MarkSwap; the next packet carrying a clock
+	// value (PCR or PES-with-PTS) computes clockOffset and clears the
+	// flag.
 	pendingSwap bool
-
-	// ptsOffset applied to PTS/DTS on each PID post-swap. Modular in
-	// ptsModulo. Computed on the first PES-start packet after a swap.
-	ptsOffset map[uint16]uint64
-	// pcrOffsetBase / pcrOffsetExt applied to PCR_base / PCR_ext fields.
-	pcrOffsetBase map[uint16]uint64
-	pcrOffsetExt  map[uint16]uint64
+	// clockOffset is added (mod 2^33) to every PCR_base, PTS, and DTS
+	// post-swap so all PIDs share one offset and their relative A/V
+	// relationship is preserved.
+	clockOffset uint64
+	// haveOffset is true once clockOffset has been established post-swap.
+	haveOffset bool
 
 	// lastCC records the most recent continuity_counter emitted on each
 	// PID. Used post-swap to rewrite CCs so the demuxer doesn't see the
 	// 4-bit counter jump when the new source starts its own sequence.
 	lastCC map[uint16]uint8
 	// ccOffset is added mod 16 to incoming CC for each PID post-swap.
-	// Populated on the first payload-carrying packet after a swap.
+	// Populated on the first payload-carrying packet after a swap. CC
+	// is intrinsically per-PID so this stays per-PID even though the
+	// clock offset is global.
 	ccOffset map[uint16]uint8
-	// ccSwapPending is like pendingSwap but scoped to CC, since CC
-	// applies to many more packets than PTS/PCR and needs its own
-	// "first packet since last swap" tracker per PID.
+	// ccSwapPending tracks which PIDs still need a CC offset computed
+	// after the most recent MarkSwap (the first payload packet on each
+	// PID establishes its entry).
 	ccSwapPending map[uint16]bool
-
-	// After MarkSwap, offsets aren't populated yet — a PID's first packet
-	// populates its entry. This tracks which PIDs are still awaiting their
-	// first post-swap packet (all known PIDs at MarkSwap time).
-	awaitingOffset map[uint16]bool
 
 	// carry buffers bytes read from inner that haven't yet formed a
 	// complete TS packet — the next Read appends to them until a full
@@ -94,24 +91,17 @@ type Bridge struct {
 // emitted before MarkSwap.
 func New(r io.ReadCloser) *Bridge {
 	return &Bridge{
-		inner:          r,
-		lastPTS:        make(map[uint16]uint64),
-		lastPCRBase:    make(map[uint16]uint64),
-		lastPCRExt:     make(map[uint16]uint64),
-		ptsOffset:      make(map[uint16]uint64),
-		pcrOffsetBase:  make(map[uint16]uint64),
-		pcrOffsetExt:   make(map[uint16]uint64),
-		lastCC:         make(map[uint16]uint8),
-		ccOffset:       make(map[uint16]uint8),
-		ccSwapPending:  make(map[uint16]bool),
-		awaitingOffset: make(map[uint16]bool),
+		inner:         r,
+		lastCC:        make(map[uint16]uint8),
+		ccOffset:      make(map[uint16]uint8),
+		ccSwapPending: make(map[uint16]bool),
 	}
 }
 
 // MarkSwap signals that the underlying reader's source has changed.
-// Subsequent packets get their PCR/PTS/DTS rewritten with a per-PID
-// offset that makes the new stream continue from the last values
-// emitted on each PID.
+// The next packet carrying a clock value (PCR or PES-with-PTS) computes
+// a single clockOffset that's applied to every PCR/PTS/DTS going forward,
+// so all PIDs share one offset and their A/V relationship is preserved.
 //
 // Drops any partial-packet carry: at a source boundary, those bytes
 // belong to the old stream and mixing them with new-stream bytes
@@ -121,24 +111,9 @@ func (b *Bridge) MarkSwap() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.pendingSwap = true
+	b.haveOffset = false
+	b.clockOffset = 0
 	b.carry = b.carry[:0]
-	b.awaitingOffset = make(map[uint16]bool, len(b.lastPTS)+len(b.lastPCRBase))
-	for pid := range b.lastPTS {
-		b.awaitingOffset[pid] = true
-	}
-	for pid := range b.lastPCRBase {
-		b.awaitingOffset[pid] = true
-	}
-	// Clear any existing offsets — they belonged to the prior swap.
-	for k := range b.ptsOffset {
-		delete(b.ptsOffset, k)
-	}
-	for k := range b.pcrOffsetBase {
-		delete(b.pcrOffsetBase, k)
-	}
-	for k := range b.pcrOffsetExt {
-		delete(b.pcrOffsetExt, k)
-	}
 	for k := range b.ccOffset {
 		delete(b.ccOffset, k)
 	}
@@ -271,42 +246,45 @@ func (b *Bridge) handleCCLocked(pid uint16, pkt []byte) {
 	b.lastCC[pid] = cc
 }
 
+// ensureOffsetLocked establishes b.clockOffset from the first post-swap
+// clock reading (clock is either a PCR_base or a PTS — both 90kHz).
+// Must hold b.mu.
+func (b *Bridge) ensureOffsetLocked(clock uint64) {
+	if !b.pendingSwap || b.haveOffset {
+		return
+	}
+	if b.haveClock {
+		target := (b.lastClock + ptsContinuationDelta) % ptsModulo
+		b.clockOffset = (target + ptsModulo - clock) % ptsModulo
+	} else {
+		// No prior clock reference — pass the stream through unchanged.
+		b.clockOffset = 0
+	}
+	b.haveOffset = true
+	b.pendingSwap = false
+}
+
 // handlePCRLocked reads/rewrites the 6-byte PCR field in place.
-func (b *Bridge) handlePCRLocked(pid uint16, pcrBytes []byte) {
+func (b *Bridge) handlePCRLocked(_ uint16, pcrBytes []byte) {
 	if len(pcrBytes) < 6 {
 		return
 	}
 	base, ext := readPCR(pcrBytes)
 
-	if b.pendingSwap {
-		// First PCR seen after swap on this PID → establish offsets.
-		if _, ok := b.pcrOffsetBase[pid]; !ok {
-			target := (b.lastPCRBase[pid] + ptsContinuationDelta) % pcrBaseModulo
-			b.pcrOffsetBase[pid] = (target + pcrBaseModulo - base) % pcrBaseModulo
-			// Keep extension aligned; carry is negligible over short swap.
-			b.pcrOffsetExt[pid] = (b.lastPCRExt[pid] + pcrExtModulo - ext) % pcrExtModulo
-		}
-		delete(b.awaitingOffset, pid)
-		if len(b.awaitingOffset) == 0 {
-			b.pendingSwap = false
-		}
+	b.ensureOffsetLocked(base)
+
+	if b.haveOffset && b.clockOffset != 0 {
+		base = (base + b.clockOffset) % pcrBaseModulo
+		writePCR(pcrBytes, base, ext)
 	}
 
-	if off, ok := b.pcrOffsetBase[pid]; ok && off != 0 {
-		base = (base + off) % pcrBaseModulo
-	}
-	if off, ok := b.pcrOffsetExt[pid]; ok && off != 0 {
-		ext = (ext + off) % pcrExtModulo
-	}
-	writePCR(pcrBytes, base, ext)
-
-	b.lastPCRBase[pid] = base
-	b.lastPCRExt[pid] = ext
+	b.lastClock = base
+	b.haveClock = true
 }
 
 // handlePESStartLocked reads/rewrites PTS/DTS in a PES header embedded
 // in the packet's payload.
-func (b *Bridge) handlePESStartLocked(pid uint16, payload []byte) {
+func (b *Bridge) handlePESStartLocked(_ uint16, payload []byte) {
 	if len(payload) < 14 {
 		return
 	}
@@ -315,8 +293,6 @@ func (b *Bridge) handlePESStartLocked(pid uint16, payload []byte) {
 		return
 	}
 	streamID := payload[3]
-	// Stream IDs that actually carry PES timestamps; others (e.g.
-	// program_stream_map, padding) don't have PTS/DTS in the header.
 	if !streamIDCarriesPTS(streamID) {
 		return
 	}
@@ -327,33 +303,22 @@ func (b *Bridge) handlePESStartLocked(pid uint16, payload []byte) {
 		return
 	}
 	// PTS at bytes 9..13.
-	if len(payload) < 14 {
-		return
-	}
 	pts := readTimestamp(payload[9:14])
 
-	if b.pendingSwap {
-		if _, ok := b.ptsOffset[pid]; !ok {
-			target := (b.lastPTS[pid] + ptsContinuationDelta) % ptsModulo
-			b.ptsOffset[pid] = (target + ptsModulo - pts) % ptsModulo
-		}
-		delete(b.awaitingOffset, pid)
-		if len(b.awaitingOffset) == 0 {
-			b.pendingSwap = false
-		}
-	}
+	b.ensureOffsetLocked(pts)
 
-	if off, ok := b.ptsOffset[pid]; ok && off != 0 {
-		pts = (pts + off) % ptsModulo
+	if b.haveOffset && b.clockOffset != 0 {
+		pts = (pts + b.clockOffset) % ptsModulo
 		writeTimestamp(payload[9:14], pts, 0x02)
 	}
-	b.lastPTS[pid] = pts
+	b.lastClock = pts
+	b.haveClock = true
 
 	// DTS at bytes 14..19 if ptsDTSFlags == '11'.
 	if ptsDTSFlags == 0x03 && len(payload) >= 19 {
 		dts := readTimestamp(payload[14:19])
-		if off, ok := b.ptsOffset[pid]; ok && off != 0 {
-			dts = (dts + off) % ptsModulo
+		if b.haveOffset && b.clockOffset != 0 {
+			dts = (dts + b.clockOffset) % ptsModulo
 			writeTimestamp(payload[14:19], dts, 0x01)
 		}
 	}
