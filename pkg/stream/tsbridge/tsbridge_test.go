@@ -330,3 +330,88 @@ func (c *chunkReader) Read(p []byte) (int, error) {
 
 // Silence unused imports when building without all tests active.
 var _ = bytes.NewReader
+
+// tsPacketWithPESAndCC builds a PES-start TS packet that embeds a
+// specific continuity_counter value in byte 3.
+func tsPacketWithPESAndCC(pid uint16, pts uint64, cc uint8) []byte {
+	p := tsPacketWithPES(pid, pts)
+	// Overwrite byte 3: keep AFC (upper nibble), set CC (lower nibble).
+	p[3] = (p[3] & 0xf0) | (cc & 0x0f)
+	return p
+}
+
+// packetCC returns the continuity_counter from byte 3 of a TS packet.
+func packetCC(p []byte) uint8 { return p[3] & 0x0f }
+
+func TestBridge_RewritesCCForContinuity(t *testing.T) {
+	// Pre-swap: PID 256 emits a packet with CC=7.
+	// Post-swap: new session starts its own sequence at CC=0.
+	// Bridge should rewrite post-swap CCs so the first is 8, the next 9.
+	pre := tsPacketWithPESAndCC(256, 10000, 7)
+	post1 := tsPacketWithPESAndCC(256, 20000, 0)
+	post2 := tsPacketWithPESAndCC(256, 30000, 1)
+
+	pr, pw := stagedPipe()
+	b := New(pr)
+	go func() {
+		_, _ = pw.Write(pre)
+		waitForQuiet(b, 200*time.Millisecond)
+		_, _ = pw.Write(post1)
+		_, _ = pw.Write(post2)
+		_ = pw.Close()
+	}()
+
+	bufPre := make([]byte, tsPacketSize)
+	_, _ = io.ReadFull(b, bufPre)
+	if got := packetCC(bufPre); got != 7 {
+		t.Errorf("pre-swap CC changed: got %d, want 7", got)
+	}
+	b.MarkSwap()
+	bufPost1 := make([]byte, tsPacketSize)
+	_, _ = io.ReadFull(b, bufPost1)
+	bufPost2 := make([]byte, tsPacketSize)
+	_, _ = io.ReadFull(b, bufPost2)
+
+	if got := packetCC(bufPost1); got != 8 {
+		t.Errorf("post-swap CC #1 = %d, want 8 (pre was 7, +1)", got)
+	}
+	if got := packetCC(bufPost2); got != 9 {
+		t.Errorf("post-swap CC #2 = %d, want 9 (continuous)", got)
+	}
+}
+
+func TestBridge_CCWrapsAt16(t *testing.T) {
+	// Last pre-swap CC=15. Post-swap should continue at 0, 1, 2.
+	pre := tsPacketWithPESAndCC(256, 10000, 15)
+	post1 := tsPacketWithPESAndCC(256, 20000, 5)
+	post2 := tsPacketWithPESAndCC(256, 30000, 6)
+	post3 := tsPacketWithPESAndCC(256, 40000, 7)
+
+	pr, pw := stagedPipe()
+	b := New(pr)
+	go func() {
+		_, _ = pw.Write(pre)
+		waitForQuiet(b, 200*time.Millisecond)
+		_, _ = pw.Write(post1)
+		_, _ = pw.Write(post2)
+		_, _ = pw.Write(post3)
+		_ = pw.Close()
+	}()
+
+	bufs := make([][]byte, 4)
+	for i := range bufs {
+		bufs[i] = make([]byte, tsPacketSize)
+	}
+	_, _ = io.ReadFull(b, bufs[0])
+	b.MarkSwap()
+	_, _ = io.ReadFull(b, bufs[1])
+	_, _ = io.ReadFull(b, bufs[2])
+	_, _ = io.ReadFull(b, bufs[3])
+
+	want := []uint8{15, 0, 1, 2}
+	for i, w := range want {
+		if got := packetCC(bufs[i]); got != w {
+			t.Errorf("packet %d CC = %d, want %d", i, got, w)
+		}
+	}
+}

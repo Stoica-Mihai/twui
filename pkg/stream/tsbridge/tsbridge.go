@@ -62,6 +62,18 @@ type Bridge struct {
 	pcrOffsetBase map[uint16]uint64
 	pcrOffsetExt  map[uint16]uint64
 
+	// lastCC records the most recent continuity_counter emitted on each
+	// PID. Used post-swap to rewrite CCs so the demuxer doesn't see the
+	// 4-bit counter jump when the new source starts its own sequence.
+	lastCC map[uint16]uint8
+	// ccOffset is added mod 16 to incoming CC for each PID post-swap.
+	// Populated on the first payload-carrying packet after a swap.
+	ccOffset map[uint16]uint8
+	// ccSwapPending is like pendingSwap but scoped to CC, since CC
+	// applies to many more packets than PTS/PCR and needs its own
+	// "first packet since last swap" tracker per PID.
+	ccSwapPending map[uint16]bool
+
 	// After MarkSwap, offsets aren't populated yet — a PID's first packet
 	// populates its entry. This tracks which PIDs are still awaiting their
 	// first post-swap packet (all known PIDs at MarkSwap time).
@@ -89,6 +101,9 @@ func New(r io.ReadCloser) *Bridge {
 		ptsOffset:      make(map[uint16]uint64),
 		pcrOffsetBase:  make(map[uint16]uint64),
 		pcrOffsetExt:   make(map[uint16]uint64),
+		lastCC:         make(map[uint16]uint8),
+		ccOffset:       make(map[uint16]uint8),
+		ccSwapPending:  make(map[uint16]bool),
 		awaitingOffset: make(map[uint16]bool),
 	}
 }
@@ -123,6 +138,14 @@ func (b *Bridge) MarkSwap() {
 	}
 	for k := range b.pcrOffsetExt {
 		delete(b.pcrOffsetExt, k)
+	}
+	for k := range b.ccOffset {
+		delete(b.ccOffset, k)
+	}
+	// Arm CC swap-pending for every PID we've ever seen so the first
+	// payload packet on each PID post-swap establishes its own CC offset.
+	for pid := range b.lastCC {
+		b.ccSwapPending[pid] = true
 	}
 }
 
@@ -198,6 +221,7 @@ func (b *Bridge) processPacketLocked(pkt []byte) {
 	pusi := pkt[1]&0x40 != 0
 	pid := uint16(pkt[1]&0x1f)<<8 | uint16(pkt[2])
 	afc := (pkt[3] >> 4) & 0x03
+	hasPayload := afc == 0x01 || afc == 0x03
 
 	// Payload start index after optional adaptation field.
 	payloadStart := 4
@@ -215,14 +239,36 @@ func (b *Bridge) processPacketLocked(pkt []byte) {
 		}
 		payloadStart = 5 + afLen
 	}
-	if afc == 0x01 || afc == 0x03 {
-		if payloadStart >= tsPacketSize {
-			return
-		}
-		if pusi {
+	if hasPayload {
+		if payloadStart < tsPacketSize && pusi {
 			b.handlePESStartLocked(pid, pkt[payloadStart:])
 		}
+		// CC only increments on payload-carrying packets. Rewrite it
+		// after PES/PCR handling so we account for the packet we're
+		// about to emit.
+		b.handleCCLocked(pid, pkt)
 	}
+}
+
+// handleCCLocked rewrites the 4-bit continuity_counter in byte 3 so the
+// per-PID sequence stays monotonic across bypass swaps. Must hold b.mu.
+func (b *Bridge) handleCCLocked(pid uint16, pkt []byte) {
+	cc := pkt[3] & 0x0f
+
+	if b.ccSwapPending[pid] {
+		// First post-swap payload packet on this PID: compute offset
+		// that makes this packet's CC equal (lastCC + 1) mod 16.
+		target := (b.lastCC[pid] + 1) & 0x0f
+		b.ccOffset[pid] = (target - cc) & 0x0f
+		delete(b.ccSwapPending, pid)
+	}
+
+	if off, ok := b.ccOffset[pid]; ok && off != 0 {
+		newCC := (cc + off) & 0x0f
+		pkt[3] = (pkt[3] & 0xf0) | newCC
+		cc = newCC
+	}
+	b.lastCC[pid] = cc
 }
 
 // handlePCRLocked reads/rewrites the 6-byte PCR field in place.
