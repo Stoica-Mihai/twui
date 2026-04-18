@@ -397,10 +397,33 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				notice(fmt.Sprintf("%s unavailable — using %s", requested, q))
 			}
 
+			// Twitch redeclares the same ad break on every playlist refresh,
+			// so OnAdBreak / OnAdEnd can fire dozens of times across a
+			// single real break. Gate the desktop notifications to one
+			// emit per kind per adNotifyCooldown window so the user sees
+			// a single "Ad break" / "Ad break ended" per actual event.
+			const adNotifyCooldown = 30 * time.Second
+			var (
+				adNotifyMu   sync.Mutex
+				lastBreakAt  time.Time
+				lastBreakEnd time.Time
+			)
+			shouldNotify := func(last *time.Time) bool {
+				adNotifyMu.Lock()
+				defer adNotifyMu.Unlock()
+				if time.Since(*last) < adNotifyCooldown {
+					return false
+				}
+				*last = time.Now()
+				return true
+			}
+
 			// Wire up notification hooks before opening.
 			if abn, ok := s.(stream.AdBreakNotifier); ok {
 				abn.SetOnAdBreak(func(duration float64, adType string) {
-					notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
+					if shouldNotify(&lastBreakAt) {
+						notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
+					}
 					send(ui.StatusAdBreak, "")
 
 					// Try to skip the ad by swapping the HLS session under
@@ -428,7 +451,9 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 			if aen, ok := s.(stream.AdEndNotifier); ok {
 				aen.SetOnAdEnd(func() {
-					notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+					if shouldNotify(&lastBreakEnd) {
+						notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+					}
 					send(ui.StatusPlaying, q)
 				})
 			}
