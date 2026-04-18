@@ -60,3 +60,12 @@ type PreRollNotifier interface {
 type AdBypasser interface {
 	BypassAdBreak(ctx context.Context) error
 }
+
+// AdScheduleClearedNotifier is an optional interface implemented by streams
+// that can signal when the playlist transitions from having at least one
+// active ad break declared to having none. Used to detect the real end of
+// an ad-break cluster directly instead of inferring it from a silence
+// timeout.
+type AdScheduleClearedNotifier interface {
+	SetOnAdScheduleCleared(fn func())
+}

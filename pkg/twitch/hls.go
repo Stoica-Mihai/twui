@@ -48,9 +48,16 @@ type TwitchHLSStream struct {
 	AdClassPatterns []string
 	AdIDPrefixes    []string
 
-	OnAdBreak func(duration float64, adType string)
-	OnAdEnd   func()
-	OnPreRoll func()
+	OnAdBreak           func(duration float64, adType string)
+	OnAdEnd             func()
+	OnPreRoll           func()
+	OnAdScheduleCleared func()
+
+	// prevHasAds is the previous playlist's ad-schedule state. A
+	// transition from true to false fires OnAdScheduleCleared — a
+	// direct signal that Twitch's playlist no longer has any active
+	// ad breaks declared, meaning the whole cluster is over.
+	prevHasAds bool
 
 	// RefreshURL, when set, returns a freshly-tokened playlist URL for the
 	// same channel/quality. BypassAdBreak calls it to rebuild the inner
@@ -113,6 +120,13 @@ func (t *TwitchHLSStream) SetOnAdEnd(fn func()) {
 func (t *TwitchHLSStream) SetOnPreRoll(fn func()) {
 	t.mu.Lock()
 	t.OnPreRoll = fn
+	t.mu.Unlock()
+}
+
+// SetOnAdScheduleCleared implements stream.AdScheduleClearedNotifier.
+func (t *TwitchHLSStream) SetOnAdScheduleCleared(fn func()) {
+	t.mu.Lock()
+	t.OnAdScheduleCleared = fn
 	t.mu.Unlock()
 }
 
@@ -355,7 +369,19 @@ func (t *TwitchHLSStream) onPlaylistParsed(playlist *hls.MediaPlaylist) {
 	t.mu.Lock()
 	t.dateRanges = playlist.DateRanges
 	t.cachedAdDateRanges = t.adDateRangesLocked()
+	nowHasAds := len(t.cachedAdDateRanges) > 0
+	prevHad := t.prevHasAds
+	t.prevHasAds = nowHasAds
+	cb := t.OnAdScheduleCleared
 	t.mu.Unlock()
+
+	// Playlist transitioned from having at least one active ad break
+	// to having none — the cluster is truly over. Fire the callback so
+	// consumers can react immediately instead of waiting on a silence
+	// timer.
+	if prevHad && !nowHasAds && cb != nil {
+		cb()
+	}
 }
 
 func (t *TwitchHLSStream) processSegments(segments []hls.Segment, isFirst bool) []hls.Segment {

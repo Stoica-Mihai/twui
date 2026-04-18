@@ -397,33 +397,31 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				notice(fmt.Sprintf("%s unavailable — using %s", requested, q))
 			}
 
-			// Twitch redeclares the same ad break on every playlist refresh
-			// and a single "real" ad break is usually a cluster of spots
-			// with 1-3 minutes of content between them. Two independent
-			// debounce windows give the right UX + resource tradeoff:
+			// Notification lifecycle:
 			//
-			// - pumpStopDebounce is short: once detections have been
-			//   quiet this long, stop the bypass pump so we're not
-			//   hammering Twitch with token requests during normal
-			//   content. Restarts automatically if a new ad fires.
-			// - adEndDebounce is long: only declare the break "ended"
-			//   (user-visible notification) once we've been quiet long
-			//   enough to be confident it's a real return to streaming,
-			//   not just content between spots in the same cluster.
+			// - Start: first OnAdBreak detection (firstOfBreak=true).
+			// - End:   OnAdScheduleCleared — a direct signal from the
+			//          playlist layer that no ad breaks remain in the
+			//          schedule. No timers, no hardcoded debounce.
+			//
+			// Pump lifecycle: the pump keeps running for
+			// pumpStopDebounce after the last detection so we don't
+			// restart bypassing for every detection refresh. It also
+			// stops immediately if the schedule clears (nothing left
+			// to bypass). Restarts if a new detection fires while we're
+			// still inAdBreak.
 			//
 			// bypassPumpInterval is how often we retry BypassAdBreak while
 			// the pump is running — faster than the ~2-4s playlist refresh
 			// so we sample more Twitch sessions per second. Single-flight
 			// drops ticks that collide with an already-running fetch.
-			const adEndDebounce = 2 * time.Minute
 			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
 			var (
-				adNotifyMu     sync.Mutex
-				inAdBreak      bool
-				notifyEndTimer *time.Timer
-				pumpStopTimer  *time.Timer
-				pumpStop       chan struct{}
+				adNotifyMu    sync.Mutex
+				inAdBreak     bool
+				pumpStopTimer *time.Timer
+				pumpStop      chan struct{}
 			)
 
 			bypasser, _ := s.(stream.AdBypasser)
@@ -452,11 +450,10 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					firstOfBreak := !inAdBreak
 					inAdBreak = true
 
-					// Short-debounce timer: stops the bypass pump when
-					// detections have been quiet for pumpStopDebounce, to
-					// stop cycling tokens during plain content. Gets
-					// reset on every OnAdBreak; a new detection after the
-					// pump already stopped will restart it below.
+					// Pump-stop debounce: the pump keeps running this
+					// long past the last detection so playlist-refresh
+					// jitter doesn't cause it to thrash stop/start. A
+					// new detection resets it.
 					if pumpStopTimer != nil {
 						pumpStopTimer.Stop()
 					}
@@ -468,32 +465,6 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 						if stop != nil {
 							slog.Info("Ad-break pump stopped", "channel", channel)
 							close(stop)
-						}
-					})
-
-					// Long-debounce timer: fires the "Ad break ended"
-					// notification once we've been quiet long enough to
-					// be confident the whole cluster of spots is over,
-					// not just the content window between two midrolls
-					// in the same block.
-					if notifyEndTimer != nil {
-						notifyEndTimer.Stop()
-					}
-					notifyEndTimer = time.AfterFunc(adEndDebounce, func() {
-						adNotifyMu.Lock()
-						wasIn := inAdBreak
-						inAdBreak = false
-						adNotifyMu.Unlock()
-						// Skip the notification if the stream has been
-						// torn down — the user already left.
-						select {
-						case <-c.Done():
-							return
-						default:
-						}
-						if wasIn {
-							slog.Info("Ad-break notify end fired", "channel", channel)
-							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
 						}
 					})
 
@@ -511,7 +482,8 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					adNotifyMu.Unlock()
 
 					// "Ad break" notification: exactly once per real
-					// cluster (while inAdBreak held across pump restarts).
+					// cluster. Held across pump restarts by inAdBreak,
+					// cleared only by OnAdScheduleCleared below.
 					if firstOfBreak {
 						notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
 					}
@@ -532,6 +504,32 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 								}
 							}
 						}(localStopCh)
+					}
+				})
+			}
+			// "Ad break ended" fires exactly when the playlist transitions
+			// from having at least one active ad-break declaration to
+			// having none — a direct signal from Twitch's side rather
+			// than a silence timer. Also stops the pump so we don't keep
+			// bypassing for nothing.
+			if asc, ok := s.(stream.AdScheduleClearedNotifier); ok {
+				asc.SetOnAdScheduleCleared(func() {
+					adNotifyMu.Lock()
+					wasIn := inAdBreak
+					inAdBreak = false
+					stop := pumpStop
+					pumpStop = nil
+					if pumpStopTimer != nil {
+						pumpStopTimer.Stop()
+						pumpStopTimer = nil
+					}
+					adNotifyMu.Unlock()
+					if stop != nil {
+						close(stop)
+					}
+					if wasIn {
+						slog.Info("Ad-break ended: schedule cleared", "channel", channel)
+						notifier.SendWithIcon(channel, "Ad break ended", getIcon())
 					}
 				})
 			}
