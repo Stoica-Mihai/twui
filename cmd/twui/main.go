@@ -403,6 +403,12 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// the start of the bypass cycle and one "Ad break ended" once
 			// no new detection has arrived for adEndDebounce.
 			//
+			// Debounce needs to be long enough to bridge across content
+			// gaps between short consecutive ads (Twitch sometimes runs
+			// 30s spots back-to-back with 20-30s of content in between).
+			// Too short and the user sees a start/end notification for
+			// each spot; too long and a real ad-finished event is delayed.
+			//
 			// bypassPumpInterval is how often we retry BypassAdBreak while
 			// in an ad break — faster than the ~2-4s playlist refresh so
 			// we sample more Twitch sessions per second, each of which
@@ -410,7 +416,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// current one doesn't. The bypass's single-flight guard drops
 			// ticks that collide with an already-running fetch, so this
 			// doesn't stack up overlapping requests.
-			const adEndDebounce = 15 * time.Second
+			const adEndDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
 			var (
 				adNotifyMu sync.Mutex
