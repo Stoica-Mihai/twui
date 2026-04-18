@@ -240,14 +240,87 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	t.adNotified = false
 	t.mu.Unlock()
 
+	// Prewarm: block here until the new inner has produced its first
+	// bytes so the consumer (mpv/vlc) doesn't see an empty-pipe stall
+	// at the swap boundary. Player-agnostic — shrinks the dead gap that
+	// any TS demuxer would otherwise have to sit through. If the new
+	// inner fails to produce anything, fall back to handing over the
+	// raw reader and let the consumer wait on it as before.
+	head, hErr := prewarmReader(ctx, newReader)
+	var swapReader io.ReadCloser = newReader
+	if hErr == nil && len(head) > 0 {
+		swapReader = &prependedReader{head: head, rest: newReader}
+	}
+
 	// SwapReader closes the old pipe reader (unblocking any in-flight
 	// Read). Cancel the old inner explicitly so its worker/writer
 	// goroutines exit rather than spinning on a closed pipe.
-	outer.SwapReader(newReader)
+	outer.SwapReader(swapReader)
 	oldInner.Cancel()
 
 	return nil
 }
+
+// prewarmReader reads up to prewarmBufSize bytes from r so the swap into
+// the FilteredStream can hand the consumer a reader that already has data
+// ready. Blocks until either the buffer fills, r returns an error, ctx
+// is cancelled, or the prewarm deadline elapses.
+//
+// On ctx cancel / deadline, returns whatever was read so far with a nil
+// error — a short prewarm is still better than none.
+func prewarmReader(ctx context.Context, r io.Reader) ([]byte, error) {
+	const (
+		prewarmBufSize  = 64 * 1024
+		prewarmDeadline = 3 * time.Second
+	)
+
+	type result struct {
+		n   int
+		err error
+	}
+	buf := make([]byte, prewarmBufSize)
+	ch := make(chan result, 1)
+	go func() {
+		n, err := r.Read(buf)
+		ch <- result{n: n, err: err}
+	}()
+
+	timer := time.NewTimer(prewarmDeadline)
+	defer timer.Stop()
+
+	select {
+	case res := <-ch:
+		return buf[:res.n], res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		// Prewarm timed out; bail and let the consumer wait on the
+		// raw reader as a fallback. The in-flight Read goroutine
+		// leaks until r produces or is closed — acceptable since
+		// this path is exceptional and r will be closed on session
+		// teardown.
+		return nil, nil
+	}
+}
+
+// prependedReader serves a buffered head on the first reads, then
+// transparently delegates to rest. Close closes rest.
+type prependedReader struct {
+	head []byte
+	pos  int
+	rest io.ReadCloser
+}
+
+func (p *prependedReader) Read(buf []byte) (int, error) {
+	if p.pos < len(p.head) {
+		n := copy(buf, p.head[p.pos:])
+		p.pos += n
+		return n, nil
+	}
+	return p.rest.Read(buf)
+}
+
+func (p *prependedReader) Close() error { return p.rest.Close() }
 
 func (t *TwitchHLSStream) onPlaylistParsed(playlist *hls.MediaPlaylist) {
 	t.mu.Lock()
