@@ -95,6 +95,17 @@ var ErrBypassInFlight = errors.New("twitch: bypass skipped, already in progress"
 // just cycles a fresh token with the same preroll stitched in.
 var ErrBypassPreContent = errors.New("twitch: bypass skipped, preroll")
 
+// ErrBypassNotInAd is returned by BypassAdBreak when the stream is
+// currently playing content. Bypassing during content opens a new
+// session whose live edge overlaps the segments we've already handed
+// to the player; processSegments' lastEmittedSeq filter then drops
+// everything, starving the pipe until the new session's playlist
+// advances past our high-water mark. The pump wakes this up once per
+// tick during the post-ad debounce window — all of those calls would
+// stall the player, so we return early and let the caller treat it
+// as a skip.
+var ErrBypassNotInAd = errors.New("twitch: bypass skipped, not in ad break")
+
 // SetOnAdBreak implements stream.AdBreakNotifier.
 func (t *TwitchHLSStream) SetOnAdBreak(fn func(duration float64, adType string)) {
 	t.mu.Lock()
@@ -194,6 +205,10 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	if !t.hadContent {
 		t.mu.Unlock()
 		return ErrBypassPreContent
+	}
+	if !t.lastWasAd {
+		t.mu.Unlock()
+		return ErrBypassNotInAd
 	}
 	t.bypassInFlight = true
 	t.mu.Unlock()
