@@ -49,17 +49,19 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 	}
 
 	// Column widths; 4 separators of 2 spaces each between the 5 data columns.
-	// Prefix: status(1) + sp(1) + fav(1) + sp(1) = 4
+	// Prefix: status(2) + sp(1) + fav(1) + sp(1) = 5 — status is 2 cells
+	// because StatusAdBreak renders as the 2-char label "AD"; other statuses
+	// pad a trailing space onto their 1-char glyph to match.
 	// Order: Channel · Category · Title(flex) · Viewers · Uptime
-	// Fixed total: 4 + 16 + 2 + 14 + 2 + 2 + 7 + 2 + 7 = 56; title gets the rest.
+	// Fixed total: 5 + 16 + 2 + 14 + 2 + 2 + 7 + 2 + 7 = 57; title gets the rest.
 	const (
-		colStatus   = 2
+		colStatus   = 3 // 2-cell glyph/label + trailing separator cell
 		colFav      = 2
 		colChannel  = 16
 		colViewers  = 7 // fits "Viewers" header (7 chars)
 		colUptime   = 7 // fits "0h 52m" / "12h 30m"
 		colCategory = 14
-		colFixed    = 56
+		colFixed    = 57
 	)
 	colTitle := m.width - 2 - colFixed
 	if colTitle < 10 {
@@ -99,17 +101,17 @@ func (m Model) renderChannelList(entries []DiscoveryEntry, height int) []string 
 			continue
 		}
 
-		statusCh := " "
+		statusCh := "  "
 		if sess, ok := m.sessions[e.Login]; ok {
 			switch sess.status {
 			case StatusPlaying:
-				statusCh = m.symbols.Playing
+				statusCh = m.symbols.Playing + " "
 			case StatusAdBreak:
 				statusCh = m.symbols.AdBreak
 			case StatusWaiting:
-				statusCh = m.symbols.Waiting
+				statusCh = m.symbols.Waiting + " "
 			case StatusReconnecting:
-				statusCh = m.symbols.Reconnecting
+				statusCh = m.symbols.Reconnecting + " "
 			}
 		}
 

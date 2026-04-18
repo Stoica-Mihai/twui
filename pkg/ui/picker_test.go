@@ -428,7 +428,7 @@ func TestSymbols_ASCIIOverride(t *testing.T) {
 		t.Errorf("ASCII Favorite = %q, want *", mp.symbols.Favorite)
 	}
 	// Unicode glyphs must be absent.
-	for _, g := range []string{"▶", "◐", "○", "⟳", "★", "↓"} {
+	for _, g := range []string{"▶", "⧖", "⟳", "★", "↓"} {
 		for _, s := range []string{mp.symbols.Playing, mp.symbols.AdBreak, mp.symbols.Waiting, mp.symbols.Reconnecting, mp.symbols.Favorite, mp.symbols.LoadMore} {
 			if s == g {
 				t.Errorf("ASCII symbol set leaked unicode glyph %q", g)
