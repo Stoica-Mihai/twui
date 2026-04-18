@@ -54,12 +54,7 @@ func (p *Player) buildArgs() []string {
 	// on repeated flags).
 	switch {
 	case strings.Contains(base, "mpv"):
-		// --cache-pause=no is the key: mpv's default is to pause
-		// playback for a full second whenever its cache underruns,
-		// which made every bypass visible as a hard stutter. Disabling
-		// it means mpv plays through brief dips from whatever bytes
-		// remain instead of inserting a stop.
-		args = append(args, "--cache=yes", "--cache-secs=30", "--cache-pause=no")
+		args = append(args, "--cache=yes", "--cache-secs=30")
 	case strings.Contains(base, "vlc"):
 		// VLC's cache knobs take milliseconds. stdin goes through the
 		// file-caching path; network-caching is also bumped so any
