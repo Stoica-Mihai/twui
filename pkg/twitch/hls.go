@@ -29,6 +29,12 @@ type adBreakInfo struct {
 	Type     string
 }
 
+// adBreaksRingCap bounds the remembered-ID buffer used to dedupe
+// OnAdBreak callbacks. A session producing more distinct ad IDs than
+// this cap risks re-firing OnAdBreak for an evicted ID; set high
+// enough that typical sessions stay within it.
+const adBreaksRingCap = 32
+
 // TwitchHLSStream wraps hls.HLSStream and sets up Twitch-specific hooks
 // for ad filtering, prefetch segment handling, and discontinuity correction.
 type TwitchHLSStream struct {
@@ -602,7 +608,7 @@ func (t *TwitchHLSStream) logNewAdBreaks(adDateRanges []hls.DateRange) {
 		}
 
 		t.mu.Lock()
-		if len(t.adBreaks) >= 10 {
+		if len(t.adBreaks) >= adBreaksRingCap {
 			t.adBreaks = t.adBreaks[1:]
 		}
 		t.adBreaks = append(t.adBreaks, adBreakInfo{ID: dr.ID, Duration: duration, Type: adType})

@@ -257,11 +257,7 @@ func (a *TwitchAPI) AccessToken(ctx context.Context, id string) (*AccessTokenRes
 		variables[k] = v
 	}
 
-	extraHeaders := map[string]string{
-		"User-Agent": a.UserAgent,
-	}
-
-	body, err := a.doGQL(ctx, "PlaybackAccessToken", hashAccessToken, variables, extraHeaders)
+	body, err := a.doGQL(ctx, "PlaybackAccessToken", hashAccessToken, variables, nil)
 	if err != nil {
 		return nil, fmt.Errorf("twitch: fetch access token: %w", err)
 	}
