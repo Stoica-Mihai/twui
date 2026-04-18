@@ -72,6 +72,13 @@ func (m Model) renderRelatedOverlay() string {
 		// then slice the output into header and body, and inject our own
 		// full-width rule between them — lipgloss's BorderHeader stops at
 		// the last cell's content and leaves a notch at the right edge.
+		cellPad := lipgloss.NewStyle().Padding(0, 1)
+		cellPadRight := cellPad.Align(lipgloss.Right)
+		headerStyle := cellPad.Inherit(m.styles.title)
+		selectedStyle := cellPad.Inherit(m.styles.selected)
+		viewerStyle := cellPadRight.Inherit(m.styles.offline)
+		channelStyle := cellPad.Inherit(m.styles.live)
+
 		t := table.New().
 			Border(lipgloss.NormalBorder()).
 			BorderStyle(m.styles.border).
@@ -85,19 +92,15 @@ func (m Model) renderRelatedOverlay() string {
 			Width(w).
 			Headers("Channel", "Viewers").
 			StyleFunc(func(row, col int) lipgloss.Style {
-				base := lipgloss.NewStyle().Padding(0, 1)
-				if col == 1 {
-					base = base.Align(lipgloss.Right)
-				}
 				switch {
 				case row == table.HeaderRow:
-					return base.Inherit(m.styles.title)
+					return headerStyle
 				case row == selIdx:
-					return base.Inherit(m.styles.selected)
+					return selectedStyle
 				case col == 1:
-					return base.Inherit(m.styles.offline)
+					return viewerStyle
 				default:
-					return base.Inherit(m.styles.live)
+					return channelStyle
 				}
 			}).
 			Rows(rows...)
