@@ -101,7 +101,7 @@ func TestBuildArgs_AbsolutePathBinaryMatch(t *testing.T) {
 
 func TestBuildArgs_MPVCacheDefaults(t *testing.T) {
 	args := (&Player{Path: "mpv"}).buildArgs()
-	for _, want := range []string{"--cache=yes", "--cache-secs=10"} {
+	for _, want := range []string{"--cache=yes", "--cache-secs=30"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("mpv args should include %q by default, got %v", want, args)
 		}
@@ -110,7 +110,7 @@ func TestBuildArgs_MPVCacheDefaults(t *testing.T) {
 
 func TestBuildArgs_VLCCacheDefaults(t *testing.T) {
 	args := (&Player{Path: "vlc"}).buildArgs()
-	for _, want := range []string{"--file-caching=10000", "--network-caching=10000"} {
+	for _, want := range []string{"--file-caching=30000", "--network-caching=30000"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("vlc args should include %q by default, got %v", want, args)
 		}
@@ -146,8 +146,8 @@ func TestBuildArgs_UnknownBinaryGetsNoPlayerSpecificFlags(t *testing.T) {
 	for _, bad := range []string{
 		"--force-media-title=s", "--meta-title=s",
 		"--no-terminal", "--vid=no", "--force-window",
-		"--cache=yes", "--cache-secs=10",
-		"--file-caching=10000", "--network-caching=10000",
+		"--cache=yes", "--cache-secs=30",
+		"--file-caching=30000", "--network-caching=30000",
 	} {
 		if slices.Contains(args, bad) {
 			t.Errorf("unknown player should not emit %q, got %v", bad, args)

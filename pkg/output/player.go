@@ -54,13 +54,13 @@ func (p *Player) buildArgs() []string {
 	// on repeated flags).
 	switch {
 	case strings.Contains(base, "mpv"):
-		args = append(args, "--cache=yes", "--cache-secs=10")
+		args = append(args, "--cache=yes", "--cache-secs=30")
 	case strings.Contains(base, "vlc"):
 		// VLC's cache knobs take milliseconds. stdin goes through the
 		// file-caching path; network-caching is also bumped so any
 		// variant that VLC classifies as network-like gets the same
 		// buffer.
-		args = append(args, "--file-caching=10000", "--network-caching=10000")
+		args = append(args, "--file-caching=30000", "--network-caching=30000")
 	}
 
 	return append(args, p.Args...)
