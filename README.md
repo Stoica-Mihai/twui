@@ -24,7 +24,6 @@ No Twitch account, no OAuth, no tracking. Built-in ad blocking. Runs mpv or vlc 
 - **Ad blocking** via a filtered HLS stream
 - **Quality picker** (`i`) or auto-best
 - **Theme picker** (`t`) with 11 presets; honors `NO_COLOR`
-- **Desktop notifications** on stream start / ad break / drop with channel avatars
 - **Auto-refresh** at a configurable interval
 - **ASCII fallback** for terminals without Unicode (`--ascii`, `TERM=linux`)
 - **Live chat pane** per playing stream (anonymous, read-only); opens on demand with `C` or automatically via `[chat] auto-open`. Pause on scroll-back, cycle with `c`, hide with `C`

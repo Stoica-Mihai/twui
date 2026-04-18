@@ -10,7 +10,7 @@ Terminal UI for browsing and playing Twitch streams. Go 1.25, Bubble Tea v2, Lip
 - `pkg/stream/`, `pkg/stream/hls/` — HLS playlist parser, segment fetcher, ad detection, muxed reader
 - `pkg/chat/` — IRCv3 parser + anonymous Twitch chat client
 - `pkg/session/` — shared `*http.Client`, cache, Retry-After helper
-- `pkg/output/`, `pkg/notify/` — media-player launch + desktop notifications
+- `pkg/output/` — media-player launch
 
 ## Build / test / run
 

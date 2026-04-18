@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,7 +22,6 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
-	"github.com/mcs/twui/pkg/notify"
 	"github.com/mcs/twui/pkg/output"
 	"github.com/mcs/twui/pkg/session"
 	"github.com/mcs/twui/pkg/stream"
@@ -207,13 +205,6 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	lowLatency, _ := cmd.Root().PersistentFlags().GetBool("low-latency")
 	client.LowLatency = lowLatency
 
-	const notifyTimeoutMs = 5000
-	notifier := notify.NewNotifier(notifyTimeoutMs)
-
-	// Prune the on-disk avatar cache so files for channels the user no longer
-	// watches don't accumulate in /tmp forever. Runs once at startup.
-	pruneAvatarCache(avatarCacheDir(), avatarCacheMaxAge)
-
 	// Load theme
 	themeName := viper.GetString("theming.theme")
 	theme := ui.ThemeByName(themeName)
@@ -354,18 +345,6 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 		Launch: func(c context.Context, channel, quality, avatarURL string, send func(ui.Status, string), notice func(string)) {
 			send(ui.StatusWaiting, "")
 
-			// Download avatar concurrently — don't block stream launch.
-			var iconPath string
-			var iconOnce sync.Once
-			iconCh := make(chan string, 1)
-			go func() {
-				iconCh <- downloadAvatar(c, sess.HTTP, avatarURL, channel)
-			}()
-			getIcon := func() string {
-				iconOnce.Do(func() { iconPath = <-iconCh })
-				return iconPath
-			}
-
 			streams, err := client.Streams(c, channel)
 			if err != nil {
 				slog.Error("Failed to get streams", "channel", channel, "err", err)
@@ -397,39 +376,24 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				notice(fmt.Sprintf("%s unavailable — using %s", requested, q))
 			}
 
-			// Notification lifecycle:
+			// Bypass pump: fires BypassAdBreak on a ticker while we're
+			// seeing ad-break detections, so the player gets fresh
+			// content from new sessions faster than Twitch's ~2-4s
+			// playlist refresh cadence. Stops itself after
+			// pumpStopDebounce of silence so we're not cycling tokens
+			// during normal content. Restarts whenever a new
+			// OnAdBreak fires.
 			//
-			// - Start: first OnAdBreak detection (firstOfBreak=true).
-			// - End:   OnAdScheduleCleared — a direct signal from the
-			//          playlist layer that no ad breaks remain in the
-			//          schedule. No timers, no hardcoded debounce.
-			//
-			// Pump lifecycle: the pump keeps running for
-			// pumpStopDebounce after the last detection so we don't
-			// restart bypassing for every detection refresh. It also
-			// stops immediately if the schedule clears (nothing left
-			// to bypass). Restarts if a new detection fires while we're
-			// still inAdBreak.
-			//
-			// bypassPumpInterval is how often we retry BypassAdBreak while
-			// the pump is running — faster than the ~2-4s playlist refresh
-			// so we sample more Twitch sessions per second. Single-flight
-			// drops ticks that collide with an already-running fetch.
+			// No desktop notifications for midrolls — bypass keeps
+			// playback continuous, so there's nothing for the user
+			// to be informed about; the in-UI status glyph handles
+			// any transient state changes.
 			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
-			// When OnAdScheduleCleared fires, hold the end event for this
-			// long before emitting the "Ad break ended" notification.
-			// Guards against false positives: each new bypass session
-			// polls a fresh playlist that may happen to be momentarily
-			// clean even though the cluster is still active — a real
-			// end will stay clean past the confirmation window.
-			const endConfirmDelay = 15 * time.Second
 			var (
-				adNotifyMu      sync.Mutex
-				inAdBreak       bool
-				pumpStopTimer   *time.Timer
-				endConfirmTimer *time.Timer
-				pumpStop        chan struct{}
+				pumpMu        sync.Mutex
+				pumpStopTimer *time.Timer
+				pumpStop      chan struct{}
 			)
 
 			bypasser, _ := s.(stream.AdBypasser)
@@ -449,61 +413,33 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				}
 			}
 
-			// Wire up notification hooks before opening.
 			if abn, ok := s.(stream.AdBreakNotifier); ok {
 				abn.SetOnAdBreak(func(duration float64, adType string) {
 					send(ui.StatusAdBreak, "")
-
-					adNotifyMu.Lock()
-					firstOfBreak := !inAdBreak
-					inAdBreak = true
-
-					// A new detection during the end-confirmation
-					// window means the earlier schedule-cleared signal
-					// was a false positive — the cluster is still
-					// active, cancel the pending "Ad break ended".
-					if endConfirmTimer != nil {
-						endConfirmTimer.Stop()
-						endConfirmTimer = nil
+					if bypasser == nil {
+						return
 					}
-
-					// Pump-stop debounce: the pump keeps running this
-					// long past the last detection so playlist-refresh
-					// jitter doesn't cause it to thrash stop/start. A
-					// new detection resets it.
+					pumpMu.Lock()
 					if pumpStopTimer != nil {
 						pumpStopTimer.Stop()
 					}
 					pumpStopTimer = time.AfterFunc(pumpStopDebounce, func() {
-						adNotifyMu.Lock()
+						pumpMu.Lock()
 						stop := pumpStop
 						pumpStop = nil
-						adNotifyMu.Unlock()
+						pumpMu.Unlock()
 						if stop != nil {
-							slog.Info("Ad-break pump stopped", "channel", channel)
 							close(stop)
 						}
 					})
-
-					// Start the pump if it isn't already running. The
-					// condition is `pumpStop == nil` (pump stopped) rather
-					// than firstOfBreak, so a later midroll in the same
-					// cluster restarts the pump after a long content gap.
 					var startPump bool
 					var localStopCh chan struct{}
-					if pumpStop == nil && bypasser != nil {
+					if pumpStop == nil {
 						pumpStop = make(chan struct{})
 						localStopCh = pumpStop
 						startPump = true
 					}
-					adNotifyMu.Unlock()
-
-					// "Ad break" notification: exactly once per real
-					// cluster. Held across pump restarts by inAdBreak,
-					// cleared only by OnAdScheduleCleared below.
-					if firstOfBreak {
-						notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
-					}
+					pumpMu.Unlock()
 
 					if startPump {
 						go func(stopCh chan struct{}) {
@@ -524,58 +460,8 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					}
 				})
 			}
-			// "Ad break ended" is armed when Twitch's playlist transitions
-			// from declaring at least one active ad break to declaring
-			// none. Because the bypass pump cycles through many sessions
-			// — each with its own playlist — a single fresh session's
-			// first-poll "clean" reading is not enough to trust; we
-			// confirm after endConfirmDelay, cancelling if OnAdBreak
-			// fires again in the meantime.
-			if asc, ok := s.(stream.AdScheduleClearedNotifier); ok {
-				asc.SetOnAdScheduleCleared(func() {
-					adNotifyMu.Lock()
-					if !inAdBreak {
-						adNotifyMu.Unlock()
-						return
-					}
-					if endConfirmTimer != nil {
-						endConfirmTimer.Stop()
-					}
-					endConfirmTimer = time.AfterFunc(endConfirmDelay, func() {
-						adNotifyMu.Lock()
-						wasIn := inAdBreak
-						inAdBreak = false
-						stop := pumpStop
-						pumpStop = nil
-						if pumpStopTimer != nil {
-							pumpStopTimer.Stop()
-							pumpStopTimer = nil
-						}
-						endConfirmTimer = nil
-						adNotifyMu.Unlock()
-						if stop != nil {
-							close(stop)
-						}
-						select {
-						case <-c.Done():
-							return
-						default:
-						}
-						if wasIn {
-							slog.Info("Ad-break ended: schedule cleared + confirmed", "channel", channel)
-							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
-						}
-					})
-					adNotifyMu.Unlock()
-					slog.Debug("Ad-break schedule cleared, confirming", "channel", channel)
-				})
-			}
 			if aen, ok := s.(stream.AdEndNotifier); ok {
 				aen.SetOnAdEnd(func() {
-					// No notification here — OnAdEnd fires after every
-					// bypass+content handoff, not at the real end of the
-					// break. The debounce timer in OnAdBreak owns the
-					// user-visible "ended" signal.
 					send(ui.StatusPlaying, q)
 				})
 			}
@@ -586,7 +472,6 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 			if d, ok := s.(stream.Droppable); ok {
 				d.SetOnDrop(func(err error) {
-					notifier.SendWithIcon(channel, "Stream dropped", getIcon())
 					send(ui.StatusReconnecting, "")
 				})
 			}
@@ -597,7 +482,6 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				return
 			}
 
-			notifier.SendWithIcon(channel, "Stream started", getIcon())
 			send(ui.StatusPlaying, q)
 
 			p := &output.Player{
@@ -614,7 +498,6 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					slog.Error("Player exited with error", "err", err)
 				}
 			}
-			notifier.SendWithIcon(channel, "Stream ended", getIcon())
 		},
 
 		ToggleFavorite: func(channel string, add bool) {
@@ -860,84 +743,6 @@ func streamWeight(name string) float64 {
 	}
 
 	return 1 - altPenalty
-}
-
-// avatarCacheDir is the on-disk avatar directory. Exposed for tests.
-func avatarCacheDir() string {
-	return filepath.Join(os.TempDir(), "twui-avatars")
-}
-
-// avatarCacheMaxAge bounds how long downloaded avatars persist on disk.
-// Older files are pruned on startup to keep the cache from growing forever.
-const avatarCacheMaxAge = 7 * 24 * time.Hour
-
-// pruneAvatarCache removes files in dir whose mtime is older than maxAge.
-// Best-effort: errors are logged at debug level and otherwise ignored.
-func pruneAvatarCache(dir string, maxAge time.Duration) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return // directory may not exist yet
-	}
-	cutoff := time.Now().Add(-maxAge)
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-				slog.Debug("failed to prune avatar", "file", e.Name(), "err", err)
-			}
-		}
-	}
-}
-
-// downloadAvatar downloads a channel avatar to a temp file and returns the path.
-// Returns "" on any error. The disk itself serves as the cache: on a second
-// call for the same channel (within the TTL), the existing file is returned
-// without re-downloading.
-func downloadAvatar(ctx context.Context, client *http.Client, url, channel string) string {
-	if url == "" {
-		return ""
-	}
-
-	dir := avatarCacheDir()
-	_ = os.MkdirAll(dir, 0700)
-
-	filePath := filepath.Join(dir, channel+".jpg")
-	if _, err := os.Stat(filePath); err == nil {
-		return filePath
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return ""
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return ""
-	}
-
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		return ""
-	}
-	const maxAvatarBytes = 512 << 10 // 512KB — avatars are typically <100KB
-	if _, err := io.Copy(f, io.LimitReader(resp.Body, maxAvatarBytes)); err != nil {
-		f.Close()
-		os.Remove(filePath)
-		return ""
-	}
-	f.Close()
-
-	return filePath
 }
 
 // parseRefreshInterval parses a Go duration string for the auto-refresh interval.

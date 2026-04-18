@@ -432,12 +432,6 @@ func (a *annotatedStream) SetOnPreRoll(fn func()) {
 	}
 }
 
-func (a *annotatedStream) SetOnAdScheduleCleared(fn func()) {
-	if n, ok := a.Stream.(stream.AdScheduleClearedNotifier); ok {
-		n.SetOnAdScheduleCleared(fn)
-	}
-}
-
 // BypassAdBreak forwards to the inner stream when it implements AdBypasser.
 // Muxed streams currently return an error — bypass would need to re-sync two
 // HLS pipelines, and we haven't built that yet.
