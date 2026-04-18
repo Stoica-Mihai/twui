@@ -94,20 +94,21 @@ func init() {
 
 // loadChatConfig builds a ui.ChatConfig from the --chat* flags and the [chat]
 // TOML section. Defaults: enabled=true, max-backlog=500, auto-open=false.
+// Flag values already reflect any TOML fallback via applyFlagFromViper in
+// initConfig; max-backlog has no flag and is read from Viper directly.
 func loadChatConfig(cmd *cobra.Command) ui.ChatConfig {
 	cfg := ui.DefaultChatConfig()
-	if v, err := cmd.Root().PersistentFlags().GetBool("chat"); err == nil {
+	flags := cmd.Root().PersistentFlags()
+	if v, err := flags.GetBool("chat"); err == nil {
 		cfg.Enabled = v
+	}
+	if v, err := flags.GetBool("chat-auto-open"); err == nil {
+		cfg.AutoOpen = v
 	}
 	if viper.IsSet("chat.max-backlog") {
 		if n := viper.GetInt("chat.max-backlog"); n > 0 {
 			cfg.MaxBacklog = n
 		}
-	}
-	if f := cmd.Root().PersistentFlags().Lookup("chat-auto-open"); f != nil && f.Changed {
-		cfg.AutoOpen, _ = cmd.Root().PersistentFlags().GetBool("chat-auto-open")
-	} else if viper.IsSet("chat.auto-open") {
-		cfg.AutoOpen = viper.GetBool("chat.auto-open")
 	}
 	return cfg
 }
@@ -163,6 +164,7 @@ func initConfig(cmd *cobra.Command) error {
 	bindFlag("low-latency", "twitch.low-latency")
 	bindFlag("refresh", "general.refresh")
 	bindFlag("chat", "chat.enabled")
+	bindFlag("chat-auto-open", "chat.auto-open")
 
 	return nil
 }
