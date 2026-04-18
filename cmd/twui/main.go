@@ -454,8 +454,12 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 						endTimer.Stop()
 					}
 					endTimer = time.AfterFunc(adEndDebounce, func() {
+						// Mark the break over and close the pump's stop
+						// channel. The pump goroutine is responsible for
+						// firing the "Ad break ended" notification in its
+						// deferred cleanup so the pair of notifications
+						// is tied strictly to the pump's lifecycle.
 						adNotifyMu.Lock()
-						wasIn := inAdBreak
 						inAdBreak = false
 						stop := pumpStop
 						pumpStop = nil
@@ -463,33 +467,31 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 						if stop != nil {
 							close(stop)
 						}
-						if wasIn {
-							notifier.SendWithIcon(channel, "Ad break ended", getIcon())
-						}
 					})
 					// Start the bypass pump if this is the first detection
-					// of the current ad break. The pump fires BypassAdBreak
-					// every bypassPumpInterval until the debounce timer
-					// above declares the break over.
+					// of the current ad break. The pump owns both the
+					// start and end notifications via its entry call and
+					// deferred cleanup — exactly one pair per continuous
+					// pump run, regardless of how detections cluster.
 					var startPump bool
+					var localStopCh chan struct{}
 					if firstOfBreak && bypasser != nil {
 						pumpStop = make(chan struct{})
+						localStopCh = pumpStop
 						startPump = true
 					}
-					stopCh := pumpStop
 					adNotifyMu.Unlock()
 
-					if firstOfBreak {
-						notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
-					}
-
 					if startPump {
-						go func() {
-							// Fire once immediately on first detection, then
-							// on the ticker. The HLS worker thread that
-							// fired this callback isn't blocked on the
-							// token+playlist fetch since runBypass runs
-							// in this goroutine.
+						go func(stopCh chan struct{}, adType string) {
+							notifier.SendWithIcon(channel, fmt.Sprintf("Ad break: %s", adType), getIcon())
+							defer notifier.SendWithIcon(channel, "Ad break ended", getIcon())
+
+							// Fire once immediately on first detection,
+							// then on the ticker. The HLS worker thread
+							// that fired this callback isn't blocked on
+							// the token+playlist fetch since runBypass
+							// runs in this goroutine.
 							runBypass()
 							ticker := time.NewTicker(bypassPumpInterval)
 							defer ticker.Stop()
@@ -503,7 +505,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 									runBypass()
 								}
 							}
-						}()
+						}(localStopCh, adType)
 					}
 				})
 			}
