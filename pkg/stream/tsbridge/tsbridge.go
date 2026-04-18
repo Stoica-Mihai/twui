@@ -24,8 +24,6 @@ const (
 	ptsModulo = 1 << 33
 	// pcrBaseModulo is 2^33 — PCR base is also 33 bits at 90kHz.
 	pcrBaseModulo = 1 << 33
-	// pcrExtModulo is 300 — PCR extension is 9 bits but values run 0..299.
-	pcrExtModulo = 300
 
 	// ptsContinuationDelta is a one-frame-ish gap inserted between the
 	// last emitted PTS on a PID and the first post-swap PTS rewrite target

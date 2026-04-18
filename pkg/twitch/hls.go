@@ -165,7 +165,7 @@ func (t *TwitchHLSStream) Open() (io.ReadCloser, error) {
 	}
 	br := tsbridge.New(rc)
 	t.mu.Lock()
-	t.outer = t.HLSStream.Filtered
+	t.outer = t.Filtered
 	t.bridge = br
 	t.mu.Unlock()
 	return br, nil
@@ -180,7 +180,7 @@ func (t *TwitchHLSStream) outerFiltered() *stream.FilteredStream {
 	if t.outer != nil {
 		return t.outer
 	}
-	return t.HLSStream.Filtered
+	return t.Filtered
 }
 
 // BypassAdBreak rebuilds the inner HLS pipeline against a freshly-tokened
@@ -280,7 +280,7 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	// inner fails to produce anything, fall back to handing over the
 	// raw reader and let the consumer wait on it as before.
 	head, hErr := prewarmReader(ctx, newReader)
-	var swapReader io.ReadCloser = newReader
+	swapReader := newReader
 	if hErr == nil && len(head) > 0 {
 		swapReader = &prependedReader{head: head, rest: newReader}
 	}
