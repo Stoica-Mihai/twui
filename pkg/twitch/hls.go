@@ -95,12 +95,28 @@ type TwitchHLSStream struct {
 	// re-fires before the new session has produced anything and the
 	// session gets swapped continuously, starving the player.
 	lastBypassAt time.Time
+
+	// adPausedAt records when the FilteredStream was paused for the
+	// current ad run. adFilterDegraded becomes true when the pause
+	// exceeds maxAdPauseDuration — at that point we assume bypass
+	// can't help (every fresh session still returns ads) and let
+	// ad segments through so the player keeps running rather than
+	// freezing. Reset when real content resumes.
+	adPausedAt       time.Time
+	adFilterDegraded bool
 }
 
 // bypassCooldown is the minimum gap between two successful BypassAdBreak
 // swaps. Must comfortably exceed "time for a new session's first segment
 // to arrive + shouldFilter to run" — ~2-3s on a healthy link.
 const bypassCooldown = 5 * time.Second
+
+// maxAdPauseDuration bounds how long the filter stays paused on ad
+// segments before giving up and letting them through. Twitch sometimes
+// stitches ads for every fresh token we can pull, so bypass produces
+// no content-bearing session; without this fallback the pipe drains
+// and the player stops mid-stream.
+const maxAdPauseDuration = 20 * time.Second
 
 // ErrBypassInFlight is returned by BypassAdBreak when another bypass is
 // currently executing. Callers should treat it as a successful dedup and
@@ -500,11 +516,33 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 	titlePatterns := t.AdTitlePatterns
 	lastWasAd := t.lastWasAd
 	onAdEnd := t.OnAdEnd
+	adPausedAt := t.adPausedAt
+	degraded := t.adFilterDegraded
 	t.mu.Unlock()
 
 	isAd := isSegmentAd(seg, cachedAdDateRanges, titlePatterns)
 
 	if isAd {
+		// Already given up on this ad run — pass segments straight through.
+		if degraded {
+			return false
+		}
+		// Bypass hasn't produced clean content for too long. Release the
+		// filter so ads play instead of starving the player, and signal
+		// OnAdEnd so the pump stops retrying and the UI shows Playing.
+		if lastWasAd && !adPausedAt.IsZero() && time.Since(adPausedAt) > maxAdPauseDuration {
+			slog.Info("Ad filter starved; letting ads through", "channel-segment", seg.Num)
+			t.mu.Lock()
+			t.adFilterDegraded = true
+			t.mu.Unlock()
+			if f := t.outerFiltered(); f != nil {
+				f.Resume()
+			}
+			if onAdEnd != nil {
+				onAdEnd()
+			}
+			return false
+		}
 		if !lastWasAd {
 			slog.Debug("Filtering ad segment", "num", seg.Num, "title", seg.Title)
 			if f := t.outerFiltered(); f != nil {
@@ -512,12 +550,16 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 			}
 		}
 		t.mu.Lock()
+		if !t.lastWasAd {
+			t.adPausedAt = time.Now()
+		}
 		t.lastWasAd = true
 		t.mu.Unlock()
 		return true
 	}
 
-	if lastWasAd {
+	// Content segment — reset any ad-break bookkeeping.
+	if lastWasAd && !degraded {
 		if f := t.outerFiltered(); f != nil {
 			f.Resume()
 		}
@@ -528,6 +570,8 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 	t.mu.Lock()
 	t.lastWasAd = false
 	t.adNotified = false
+	t.adPausedAt = time.Time{}
+	t.adFilterDegraded = false
 	// Record that this content segment has been sent to the writer so
 	// subsequent bypass sessions can skip it via the lastEmitted filter
 	// in processSegments.

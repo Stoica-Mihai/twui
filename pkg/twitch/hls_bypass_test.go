@@ -122,6 +122,45 @@ func TestTwitchHLSStream_BypassAdBreak_Cooldown(t *testing.T) {
 	}
 }
 
+// TestTwitchHLSStream_ShouldFilter_StarvationFallback locks in the
+// behaviour that prevents a permanent player freeze when bypass can't
+// escape the ad pool: once the filter has been paused longer than
+// maxAdPauseDuration, the next ad segment releases it and OnAdEnd
+// fires so the pump stops and the UI shows Playing.
+func TestTwitchHLSStream_ShouldFilter_StarvationFallback(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+
+	// Simulate an already-running ad run that started long enough ago
+	// to exceed the threshold.
+	s.lastWasAd = true
+	s.adPausedAt = time.Now().Add(-maxAdPauseDuration - time.Second)
+
+	var endCalls int
+	s.OnAdEnd = func() { endCalls++ }
+
+	adSeg := hls.Segment{Num: 100, Title: "Amazon|xyz"}
+	filtered := s.shouldFilter(adSeg)
+	if filtered {
+		t.Error("shouldFilter past maxAdPauseDuration = true, want false (degraded, let it through)")
+	}
+	if !s.adFilterDegraded {
+		t.Error("adFilterDegraded = false after starvation, want true")
+	}
+	if endCalls != 1 {
+		t.Errorf("OnAdEnd fired %d times, want 1", endCalls)
+	}
+
+	// Subsequent ad segments in the same run stay degraded; no further
+	// OnAdEnd calls.
+	filtered = s.shouldFilter(hls.Segment{Num: 101, Title: "Amazon|xyz"})
+	if filtered {
+		t.Error("degraded-mode ad segment filtered, want pass-through")
+	}
+	if endCalls != 1 {
+		t.Errorf("OnAdEnd fired %d times after second ad, want 1", endCalls)
+	}
+}
+
 func TestTwitchHLSStream_BypassAdBreak_SingleFlight(t *testing.T) {
 	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
 	s.hadContent = true
