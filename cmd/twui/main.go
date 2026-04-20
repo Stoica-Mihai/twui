@@ -356,18 +356,24 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// fires — e.g. the ad run ends via stream drop.
 			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
-			// maxPumpRunDuration bounds how long the pump keeps trying
-			// before giving up. When Twitch stitches ads for every fresh
-			// token, bypass produces a session that also shows ads; brief
-			// content blips between swaps keep the in-stream filter timer
-			// from firing. Cap the pump with a wall-clock timer so the
-			// player never freezes: on expiry, tell the stream to stop
-			// filtering so ads play through for the rest of the break.
-			const maxPumpRunDuration = 25 * time.Second
+			// maxAdRunDuration bounds the total time we spend trying to
+			// bypass a continuous ad run. Tracked at outer scope so it
+			// survives OnAdEnd/OnAdBreak thrash — brief content blips
+			// between swaps fire OnAdEnd, which would otherwise reset a
+			// goroutine-local timer and let the pump run indefinitely
+			// while the player starves.
+			const maxAdRunDuration = 25 * time.Second
+			// adRunResetGrace is the sustained-content window required
+			// before we consider the current ad run "over". Shorter than
+			// the bypass cadence so flickery ad↔content patterns keep
+			// the clock advancing.
+			const adRunResetGrace = 8 * time.Second
 			var (
-				pumpMu        sync.Mutex
-				pumpStopTimer *time.Timer
-				pumpStop      chan struct{}
+				pumpMu          sync.Mutex
+				pumpStopTimer   *time.Timer
+				pumpStop        chan struct{}
+				adRunStartedAt  time.Time
+				adRunResetTimer *time.Timer
 			)
 
 			stopPump := func() {
@@ -382,6 +388,16 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				if stop != nil {
 					close(stop)
 				}
+			}
+
+			resetAdRun := func() {
+				pumpMu.Lock()
+				adRunStartedAt = time.Time{}
+				if adRunResetTimer != nil {
+					adRunResetTimer.Stop()
+					adRunResetTimer = nil
+				}
+				pumpMu.Unlock()
 			}
 
 			bypasser, _ := s.(stream.AdBypasser)
@@ -418,6 +434,16 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 						return
 					}
 					pumpMu.Lock()
+					// Cancel any pending ad-run reset — we're still
+					// getting ads, the earlier OnAdEnd was a blip.
+					if adRunResetTimer != nil {
+						adRunResetTimer.Stop()
+						adRunResetTimer = nil
+					}
+					if adRunStartedAt.IsZero() {
+						adRunStartedAt = time.Now()
+					}
+					runAge := time.Since(adRunStartedAt)
 					if pumpStopTimer != nil {
 						pumpStopTimer.Stop()
 					}
@@ -431,9 +457,19 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					}
 					pumpMu.Unlock()
 
+					// Past the budget already — don't even try. Degrade
+					// immediately so the new ads play through instead of
+					// queuing up behind a paused filter.
+					if runAge > maxAdRunDuration {
+						slog.Info("Ad run past budget; letting ads play", "channel", channel, "age", runAge)
+						if d, ok := s.(stream.AdFilterDegrader); ok {
+							d.DegradeAdFilter()
+						}
+						return
+					}
+
 					if startPump {
 						go func(stopCh chan struct{}) {
-							pumpStart := time.Now()
 							runBypass()
 							ticker := time.NewTicker(bypassPumpInterval)
 							defer ticker.Stop()
@@ -444,11 +480,15 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 								case <-c.Done():
 									return
 								case <-ticker.C:
-									if time.Since(pumpStart) > maxPumpRunDuration {
+									pumpMu.Lock()
+									start := adRunStartedAt
+									pumpMu.Unlock()
+									if !start.IsZero() && time.Since(start) > maxAdRunDuration {
 										slog.Info("Bypass pump gave up; letting ads play", "channel", channel)
 										if d, ok := s.(stream.AdFilterDegrader); ok {
 											d.DegradeAdFilter()
 										}
+										resetAdRun()
 										stopPump()
 										return
 									}
@@ -462,11 +502,23 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			if aen, ok := s.(stream.AdEndNotifier); ok {
 				aen.SetOnAdEnd(func() {
 					send(ui.StatusPlaying, q)
-					// Content resumed — the pump has nothing useful to
-					// do now and each tick would just log "not in ad
-					// break". Stop immediately; OnAdBreak restarts it
-					// if another ad rolls in.
-					stopPump()
+					// Debounce the clear: a brief content blip between
+					// bypass swaps shouldn't reset the ad-run budget
+					// (and stop the pump) — only sustained content does.
+					// If another OnAdBreak fires within the grace
+					// window, it cancels this timer.
+					pumpMu.Lock()
+					if adRunResetTimer != nil {
+						adRunResetTimer.Stop()
+					}
+					adRunResetTimer = time.AfterFunc(adRunResetGrace, func() {
+						pumpMu.Lock()
+						adRunStartedAt = time.Time{}
+						adRunResetTimer = nil
+						pumpMu.Unlock()
+						stopPump()
+					})
+					pumpMu.Unlock()
 				})
 			}
 			if prn, ok := s.(stream.PreRollNotifier); ok {
