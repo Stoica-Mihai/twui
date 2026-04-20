@@ -387,7 +387,8 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 					slog.Info("Ad-break bypass applied", "channel", channel)
 				case errors.Is(err, twitch.ErrBypassInFlight),
 					errors.Is(err, twitch.ErrBypassPreContent),
-					errors.Is(err, twitch.ErrBypassNotInAd):
+					errors.Is(err, twitch.ErrBypassNotInAd),
+					errors.Is(err, twitch.ErrBypassRecent):
 					slog.Debug("Ad-break bypass skipped", "channel", channel, "reason", err)
 				default:
 					slog.Warn("Ad-break bypass failed", "channel", channel, "err", err)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mcs/twui/pkg/stream"
 	"github.com/mcs/twui/pkg/stream/hls"
@@ -97,6 +98,27 @@ func TestTwitchHLSStream_BypassAdBreak_SkipsContent(t *testing.T) {
 	err := s.BypassAdBreak(context.Background())
 	if !errors.Is(err, ErrBypassNotInAd) {
 		t.Errorf("BypassAdBreak during content err = %v, want ErrBypassNotInAd", err)
+	}
+}
+
+// TestTwitchHLSStream_BypassAdBreak_Cooldown locks in the fix for a
+// runaway bypass loop: without a cooldown, the pump ticker fires another
+// BypassAdBreak before the new session has delivered its first segment
+// (lastWasAd is held true through the swap), and the session gets
+// replaced continuously, starving the player.
+func TestTwitchHLSStream_BypassAdBreak_Cooldown(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+	s.hadContent = true
+	s.lastWasAd = true
+	s.lastBypassAt = time.Now()
+	s.RefreshURL = func(ctx context.Context) (string, error) {
+		t.Fatal("RefreshURL must not run inside bypassCooldown")
+		return "", nil
+	}
+
+	err := s.BypassAdBreak(context.Background())
+	if !errors.Is(err, ErrBypassRecent) {
+		t.Errorf("BypassAdBreak inside cooldown err = %v, want ErrBypassRecent", err)
 	}
 }
 
