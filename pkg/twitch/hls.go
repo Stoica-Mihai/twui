@@ -145,6 +145,12 @@ var ErrBypassNotInAd = errors.New("twitch: bypass skipped, not in ad break")
 // swapping again inside that window starves the player.
 var ErrBypassRecent = errors.New("twitch: bypass skipped, cooldown")
 
+// ErrBypassDegraded is returned by BypassAdBreak when the filter is
+// in degraded mode — ads are already flowing through to the player, so
+// swapping the session would churn the pipe without benefit. Callers
+// (the pump) should treat it as terminal and stop retrying.
+var ErrBypassDegraded = errors.New("twitch: bypass skipped, filter degraded")
+
 // SetOnAdBreak implements stream.AdBreakNotifier.
 func (t *TwitchHLSStream) SetOnAdBreak(fn func(duration float64, adType string)) {
 	t.mu.Lock()
@@ -262,6 +268,10 @@ func (t *TwitchHLSStream) BypassAdBreak(ctx context.Context) error {
 	if t.bypassInFlight {
 		t.mu.Unlock()
 		return ErrBypassInFlight
+	}
+	if t.adFilterDegraded {
+		t.mu.Unlock()
+		return ErrBypassDegraded
 	}
 	if !t.hadContent {
 		t.mu.Unlock()

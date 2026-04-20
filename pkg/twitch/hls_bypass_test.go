@@ -122,6 +122,27 @@ func TestTwitchHLSStream_BypassAdBreak_Cooldown(t *testing.T) {
 	}
 }
 
+// TestTwitchHLSStream_BypassAdBreak_SkippedWhenDegraded locks in the
+// fix for post-degrade pump churn: once DegradeAdFilter has been called,
+// further BypassAdBreak requests are a waste — the player is already
+// receiving ads via the un-paused filter, so swapping the session just
+// introduces stutters. BypassAdBreak must refuse with ErrBypassDegraded.
+func TestTwitchHLSStream_BypassAdBreak_SkippedWhenDegraded(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+	s.hadContent = true
+	s.lastWasAd = true
+	s.adFilterDegraded = true
+	s.RefreshURL = func(ctx context.Context) (string, error) {
+		t.Fatal("RefreshURL must not run while the filter is degraded")
+		return "", nil
+	}
+
+	err := s.BypassAdBreak(context.Background())
+	if !errors.Is(err, ErrBypassDegraded) {
+		t.Errorf("BypassAdBreak while degraded err = %v, want ErrBypassDegraded", err)
+	}
+}
+
 // TestTwitchHLSStream_DegradeAdFilter_ReleasesAndEndsBreak verifies the
 // pump-level fallback: when the bypass pump gives up, it calls
 // DegradeAdFilter, which must Resume the outer FilteredStream (so the

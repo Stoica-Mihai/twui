@@ -362,7 +362,11 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// between swaps fire OnAdEnd, which would otherwise reset a
 			// goroutine-local timer and let the pump run indefinitely
 			// while the player starves.
-			const maxAdRunDuration = 25 * time.Second
+			// mpv's --cache-secs=30 (see output.Player buildArgs) gives us
+			// ~30s of playback buffer. A pause longer than that freezes the
+			// player. Budget 15s to leave comfortable headroom for mpv plus
+			// the bypass overhead (token fetch + playlist + prewarm).
+			const maxAdRunDuration = 15 * time.Second
 			// adRunResetGrace is the sustained-content window required
 			// before we consider the current ad run "over". Shorter than
 			// the bypass cadence so flickery ad↔content patterns keep
@@ -401,14 +405,21 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			}
 
 			bypasser, _ := s.(stream.AdBypasser)
-			runBypass := func() {
+			// runBypass returns true when the underlying stream signals it's
+			// done with bypass for this ad run (currently: degraded). The
+			// pump exits on true so it doesn't keep spinning through
+			// no-op cycles after the filter has already been released.
+			runBypass := func() (done bool) {
 				if bypasser == nil {
-					return
+					return false
 				}
 				err := bypasser.BypassAdBreak(c)
 				switch {
 				case err == nil:
 					slog.Info("Ad-break bypass applied", "channel", channel)
+				case errors.Is(err, twitch.ErrBypassDegraded):
+					slog.Debug("Ad-break bypass skipped", "channel", channel, "reason", err)
+					return true
 				case errors.Is(err, twitch.ErrBypassInFlight),
 					errors.Is(err, twitch.ErrBypassPreContent),
 					errors.Is(err, twitch.ErrBypassNotInAd),
@@ -417,6 +428,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 				default:
 					slog.Warn("Ad-break bypass failed", "channel", channel, "err", err)
 				}
+				return false
 			}
 
 			if abn, ok := s.(stream.AdBreakNotifier); ok {
@@ -470,7 +482,10 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 
 					if startPump {
 						go func(stopCh chan struct{}) {
-							runBypass()
+							if runBypass() {
+								stopPump()
+								return
+							}
 							ticker := time.NewTicker(bypassPumpInterval)
 							defer ticker.Stop()
 							for {
@@ -492,7 +507,10 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 										stopPump()
 										return
 									}
-									runBypass()
+									if runBypass() {
+										stopPump()
+										return
+									}
 								}
 							}
 						}(localStopCh)
