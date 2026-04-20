@@ -450,5 +450,13 @@ func (a *annotatedStream) BypassAdBreak(ctx context.Context) error {
 	return errors.New("twitch: ad-break bypass not supported on this stream")
 }
 
+// DegradeAdFilter forwards to the inner stream when it implements it.
+func (a *annotatedStream) DegradeAdFilter() {
+	if d, ok := a.Stream.(stream.AdFilterDegrader); ok {
+		d.DegradeAdFilter()
+	}
+}
+
 var _ stream.StreamInfoProvider = (*annotatedStream)(nil)
 var _ stream.AdBypasser = (*annotatedStream)(nil)
+var _ stream.AdFilterDegrader = (*annotatedStream)(nil)

@@ -356,6 +356,14 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 			// fires — e.g. the ad run ends via stream drop.
 			const pumpStopDebounce = 60 * time.Second
 			const bypassPumpInterval = 1 * time.Second
+			// maxPumpRunDuration bounds how long the pump keeps trying
+			// before giving up. When Twitch stitches ads for every fresh
+			// token, bypass produces a session that also shows ads; brief
+			// content blips between swaps keep the in-stream filter timer
+			// from firing. Cap the pump with a wall-clock timer so the
+			// player never freezes: on expiry, tell the stream to stop
+			// filtering so ads play through for the rest of the break.
+			const maxPumpRunDuration = 25 * time.Second
 			var (
 				pumpMu        sync.Mutex
 				pumpStopTimer *time.Timer
@@ -425,6 +433,7 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 
 					if startPump {
 						go func(stopCh chan struct{}) {
+							pumpStart := time.Now()
 							runBypass()
 							ticker := time.NewTicker(bypassPumpInterval)
 							defer ticker.Stop()
@@ -435,6 +444,14 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 								case <-c.Done():
 									return
 								case <-ticker.C:
+									if time.Since(pumpStart) > maxPumpRunDuration {
+										slog.Info("Bypass pump gave up; letting ads play", "channel", channel)
+										if d, ok := s.(stream.AdFilterDegrader); ok {
+											d.DegradeAdFilter()
+										}
+										stopPump()
+										return
+									}
 									runBypass()
 								}
 							}

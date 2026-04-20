@@ -60,3 +60,12 @@ type PreRollNotifier interface {
 type AdBypasser interface {
 	BypassAdBreak(ctx context.Context) error
 }
+
+// AdFilterDegrader is an optional interface implemented by streams that
+// filter ad segments. DegradeAdFilter tells the stream to stop dropping
+// ad segments and let them through — used when the bypass pump has
+// tried repeatedly without success, so the player gets to play the ads
+// rather than freezing on an empty pipe.
+type AdFilterDegrader interface {
+	DegradeAdFilter()
+}

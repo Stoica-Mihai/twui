@@ -166,6 +166,28 @@ func (t *TwitchHLSStream) SetOnPreRoll(fn func()) {
 	t.mu.Unlock()
 }
 
+// DegradeAdFilter implements stream.AdFilterDegrader. Called by the bypass
+// pump when it has given up trying to escape an ad run; switches shouldFilter
+// into pass-through mode for the remainder of this break, unpauses the
+// outer FilteredStream, and fires OnAdEnd so the UI returns to Playing.
+// State clears on the next real content segment.
+func (t *TwitchHLSStream) DegradeAdFilter() {
+	t.mu.Lock()
+	alreadyDegraded := t.adFilterDegraded
+	t.adFilterDegraded = true
+	onAdEnd := t.OnAdEnd
+	t.mu.Unlock()
+	if alreadyDegraded {
+		return
+	}
+	if f := t.outerFiltered(); f != nil {
+		f.Resume()
+	}
+	if onAdEnd != nil {
+		onAdEnd()
+	}
+}
+
 // NewTwitchHLSStream creates a TwitchHLSStream wrapping the given HLSStream.
 func NewTwitchHLSStream(hlsStream *hls.HLSStream, lowLatency bool) *TwitchHLSStream {
 	t := &TwitchHLSStream{

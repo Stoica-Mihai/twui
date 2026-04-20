@@ -122,6 +122,35 @@ func TestTwitchHLSStream_BypassAdBreak_Cooldown(t *testing.T) {
 	}
 }
 
+// TestTwitchHLSStream_DegradeAdFilter_ReleasesAndEndsBreak verifies the
+// pump-level fallback: when the bypass pump gives up, it calls
+// DegradeAdFilter, which must Resume the outer FilteredStream (so the
+// pipe drains ads instead of staying paused) and fire OnAdEnd (so the
+// pump actually exits and the UI returns to Playing).
+func TestTwitchHLSStream_DegradeAdFilter_ReleasesAndEndsBreak(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+	// Simulate having been paused mid-break.
+	s.outer = stream.NewFilteredStream(nil)
+	s.outer.Pause()
+
+	var endCalls int
+	s.OnAdEnd = func() { endCalls++ }
+
+	s.DegradeAdFilter()
+	if !s.adFilterDegraded {
+		t.Error("adFilterDegraded = false after DegradeAdFilter, want true")
+	}
+	if endCalls != 1 {
+		t.Errorf("OnAdEnd fired %d times, want 1", endCalls)
+	}
+
+	// Idempotent — second call does nothing.
+	s.DegradeAdFilter()
+	if endCalls != 1 {
+		t.Errorf("OnAdEnd fired %d times after redundant degrade, want 1", endCalls)
+	}
+}
+
 // TestTwitchHLSStream_ShouldFilter_StarvationFallback locks in the
 // behaviour that prevents a permanent player freeze when bypass can't
 // escape the ad pool: once the filter has been paused longer than
