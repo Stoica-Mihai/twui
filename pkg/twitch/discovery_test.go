@@ -28,9 +28,14 @@ func TestLive_BrowseCategories(t *testing.T) {
 		if c.Name == "" {
 			t.Errorf("category has empty name: %+v", c)
 		}
-		if c.ViewerCount <= 0 {
-			t.Errorf("category %q has non-positive viewer count: %d", c.Name, c.ViewerCount)
-		}
+	}
+	// Tail categories can legitimately have 0 live viewers — the top 100
+	// is ranked by recent activity. The most-watched category, however,
+	// must always have viewers; a 0 here means viewersCount was renamed
+	// upstream and every entry silently deserialized to zero.
+	if cats[0].ViewerCount <= 0 {
+		t.Errorf("top category %q has non-positive viewer count: %d (viewersCount field renamed?)",
+			cats[0].Name, cats[0].ViewerCount)
 	}
 	t.Logf("got %d categories, first: %q (%d viewers)",
 		len(cats), cats[0].Name, cats[0].ViewerCount)

@@ -99,9 +99,7 @@ type TwitchAPI struct {
 	// a residential ISP, which suppresses most server-side mid-roll stitching.
 	ProxyURL string
 
-	// identityMu guards deviceID and clientSessionID against concurrent
-	// reads (in setAuthHeaders) and writes (in RotateIdentity).
-	identityMu      sync.RWMutex
+	identityMu      sync.RWMutex // guards deviceID, clientSessionID
 	deviceID        string
 	clientSessionID string
 
@@ -131,29 +129,26 @@ func (a *TwitchAPI) RotateIdentity() {
 	a.identityMu.Lock()
 	a.deviceID = newDeviceID()
 	a.clientSessionID = newClientSessionID()
-	dev := a.deviceID
+	slog.Debug("Twitch identity rotated", "device", a.deviceID)
 	a.identityMu.Unlock()
 
 	a.integrityMu.Lock()
 	a.integrityToken = ""
 	a.integrityExpiry = time.Time{}
 	a.integrityMu.Unlock()
-
-	slog.Debug("Twitch identity rotated", "device", dev)
 }
 
-func (a *TwitchAPI) gqlURL() string {
-	if a.ProxyURL != "" {
-		return strings.TrimRight(a.ProxyURL, "/") + "/gql"
-	}
-	return GQLEndpoint
-}
+// Proxy paths must match the routes defined in cloudflare-worker/worker.js.
+const (
+	proxyPathGQL       = "/gql"
+	proxyPathIntegrity = "/integrity"
+)
 
-func (a *TwitchAPI) integrityURL() string {
+func (a *TwitchAPI) endpoint(proxyPath, fallback string) string {
 	if a.ProxyURL != "" {
-		return strings.TrimRight(a.ProxyURL, "/") + "/integrity"
+		return strings.TrimRight(a.ProxyURL, "/") + proxyPath
 	}
-	return IntegrityEndpoint
+	return fallback
 }
 
 // newDeviceID generates a random UUID v4 string for use as X-Device-ID.
@@ -267,8 +262,8 @@ func (a *TwitchAPI) setAuthHeaders(req *http.Request) {
 
 // fetchIntegrityToken makes a single request to the Twitch passport endpoint.
 func (a *TwitchAPI) fetchIntegrityToken(ctx context.Context) (string, time.Time) {
-	url := a.integrityURL()
-	slog.Debug("integrity request", "url", url, "viaProxy", a.ProxyURL != "")
+	url := a.endpoint(proxyPathIntegrity, IntegrityEndpoint)
+	slog.Debug("integrity request", "url", url)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader("{}"))
 	if err != nil {
 		return "", time.Time{}
@@ -465,8 +460,8 @@ func (a *TwitchAPI) doGQL(ctx context.Context, operationName, hash string, varia
 
 // doGQLRoundTrip sends a pre-marshaled GQL request body and processes the response.
 func (a *TwitchAPI) doGQLRoundTrip(ctx context.Context, bodyBytes []byte, extraHeaders map[string]string, operationName string) (json.RawMessage, error) {
-	url := a.gqlURL()
-	slog.Debug("GQL request", "operation", operationName, "url", url, "viaProxy", a.ProxyURL != "")
+	url := a.endpoint(proxyPathGQL, GQLEndpoint)
+	slog.Debug("GQL request", "operation", operationName, "url", url)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("twitch: create gql request: %w", err)

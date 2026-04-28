@@ -25,9 +25,9 @@ const ROUTES = {
 	'/integrity': 'https://passport.twitch.tv/integrity',
 };
 
-// Headers Cloudflare adds to inbound requests; stripping them keeps the
-// upstream request looking like it came from the worker, not the original
-// client, and avoids leaking the user's IP/country to Twitch.
+// Headers stripped before the upstream fetch. Cloudflare's cf-* and the
+// x-forwarded-* set would leak the original client IP/country to Twitch;
+// x-proxy-secret is consumed by this worker and must not be relayed.
 const STRIP_REQUEST_HEADERS = [
 	'host',
 	'cf-connecting-ip',
@@ -38,6 +38,7 @@ const STRIP_REQUEST_HEADERS = [
 	'x-forwarded-for',
 	'x-forwarded-proto',
 	'x-real-ip',
+	'x-proxy-secret',
 ];
 
 export default {
@@ -59,18 +60,13 @@ export default {
 
 		const headers = new Headers(request.headers);
 		for (const h of STRIP_REQUEST_HEADERS) headers.delete(h);
-		headers.delete('x-proxy-secret');
 
-		const init = {
+		const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+		const upstream = await fetch(target, {
 			method: request.method,
 			headers,
-			body:
-				request.method === 'GET' || request.method === 'HEAD'
-					? undefined
-					: await request.arrayBuffer(),
-		};
-
-		const upstream = await fetch(target, init);
+			body: hasBody ? request.body : undefined,
+		});
 		return new Response(upstream.body, {
 			status: upstream.status,
 			statusText: upstream.statusText,
