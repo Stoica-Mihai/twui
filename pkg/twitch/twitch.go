@@ -60,6 +60,12 @@ func (t *TwitchClient) Streams(ctx context.Context, channel string) (map[string]
 		if tw := extractTwitchHLS(s); tw != nil {
 			quality := name
 			tw.RefreshURL = func(ctx context.Context) (string, error) {
+				// Roll a fresh X-Device-ID + Client-Session-Id so each
+				// bypass attempt looks like a brand-new viewer to Twitch's
+				// ad-decider. Defeats sticky stitching that keys on the
+				// previous identity — without this, every retry pulls
+				// the same ad-stitched session.
+				t.api.RotateIdentity()
 				return t.refreshVariantURL(ctx, channel, quality)
 			}
 		}

@@ -88,10 +88,23 @@ var fallbackQueries = map[string]string{
 
 // TwitchAPI handles Twitch GQL persisted queries for access tokens and metadata.
 type TwitchAPI struct {
-	ClientID          string
-	UserAgent         string
-	DeviceID          string
-	clientSessionID   string
+	ClientID  string
+	UserAgent string
+
+	// ProxyURL, when non-empty, replaces gql.twitch.tv and passport.twitch.tv
+	// with {ProxyURL}/gql and {ProxyURL}/integrity. The proxy must relay both
+	// endpoints from a single egress IP so the integrity token Twitch issues
+	// stays bound to the same origin that later sends the GQL call. Used to
+	// shift the apparent source of the PlaybackAccessToken request away from
+	// a residential ISP, which suppresses most server-side mid-roll stitching.
+	ProxyURL string
+
+	// identityMu guards deviceID and clientSessionID against concurrent
+	// reads (in setAuthHeaders) and writes (in RotateIdentity).
+	identityMu      sync.RWMutex
+	deviceID        string
+	clientSessionID string
+
 	client            *http.Client
 	headers           map[string]string
 	accessTokenParams map[string]string
@@ -99,6 +112,48 @@ type TwitchAPI struct {
 	integrityMu     sync.Mutex
 	integrityToken  string
 	integrityExpiry time.Time
+}
+
+// DeviceID returns the current X-Device-ID. Safe to call concurrently
+// with RotateIdentity.
+func (a *TwitchAPI) DeviceID() string {
+	a.identityMu.RLock()
+	defer a.identityMu.RUnlock()
+	return a.deviceID
+}
+
+// RotateIdentity assigns fresh X-Device-ID and Client-Session-Id values
+// and invalidates the cached integrity token (which Twitch binds to the
+// previous identity). The next outgoing request will look like a
+// brand-new viewer — used by ad-bypass to defeat sticky stitching that
+// keys on (deviceID, sessionID, ip).
+func (a *TwitchAPI) RotateIdentity() {
+	a.identityMu.Lock()
+	a.deviceID = newDeviceID()
+	a.clientSessionID = newClientSessionID()
+	dev := a.deviceID
+	a.identityMu.Unlock()
+
+	a.integrityMu.Lock()
+	a.integrityToken = ""
+	a.integrityExpiry = time.Time{}
+	a.integrityMu.Unlock()
+
+	slog.Debug("Twitch identity rotated", "device", dev)
+}
+
+func (a *TwitchAPI) gqlURL() string {
+	if a.ProxyURL != "" {
+		return strings.TrimRight(a.ProxyURL, "/") + "/gql"
+	}
+	return GQLEndpoint
+}
+
+func (a *TwitchAPI) integrityURL() string {
+	if a.ProxyURL != "" {
+		return strings.TrimRight(a.ProxyURL, "/") + "/integrity"
+	}
+	return IntegrityEndpoint
 }
 
 // newDeviceID generates a random UUID v4 string for use as X-Device-ID.
@@ -170,7 +225,7 @@ func NewTwitchAPI(client *http.Client, clientID, userAgent string, customHeaders
 	return &TwitchAPI{
 		ClientID:          clientID,
 		UserAgent:         userAgent,
-		DeviceID:          newDeviceID(),
+		deviceID:          newDeviceID(),
 		clientSessionID:   newClientSessionID(),
 		client:            client,
 		headers:           customHeaders,
@@ -198,16 +253,23 @@ func (a *TwitchAPI) getIntegrityToken(ctx context.Context) string {
 // by every GQL/integrity request; keeps the header set in one place so
 // Client-ID, Client-Session-Id, X-Device-ID and User-Agent stay in sync.
 func (a *TwitchAPI) setAuthHeaders(req *http.Request) {
+	a.identityMu.RLock()
+	dev := a.deviceID
+	sess := a.clientSessionID
+	a.identityMu.RUnlock()
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Client-ID", a.ClientID)
-	req.Header.Set("Client-Session-Id", a.clientSessionID)
-	req.Header.Set("X-Device-ID", a.DeviceID)
+	req.Header.Set("Client-Session-Id", sess)
+	req.Header.Set("X-Device-ID", dev)
 	req.Header.Set("User-Agent", a.UserAgent)
 }
 
 // fetchIntegrityToken makes a single request to the Twitch passport endpoint.
 func (a *TwitchAPI) fetchIntegrityToken(ctx context.Context) (string, time.Time) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, IntegrityEndpoint, strings.NewReader("{}"))
+	url := a.integrityURL()
+	slog.Debug("integrity request", "url", url, "viaProxy", a.ProxyURL != "")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader("{}"))
 	if err != nil {
 		return "", time.Time{}
 	}
@@ -367,8 +429,6 @@ func (a *TwitchAPI) doGQL(ctx context.Context, operationName, hash string, varia
 			return nil, err
 		}
 
-		slog.Debug("GQL request", "operation", operationName)
-
 		data, err := a.doGQLRoundTrip(ctx, bodyBytes, extraHeaders, operationName)
 		if err == nil {
 			return data, nil
@@ -405,7 +465,9 @@ func (a *TwitchAPI) doGQL(ctx context.Context, operationName, hash string, varia
 
 // doGQLRoundTrip sends a pre-marshaled GQL request body and processes the response.
 func (a *TwitchAPI) doGQLRoundTrip(ctx context.Context, bodyBytes []byte, extraHeaders map[string]string, operationName string) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, GQLEndpoint, bytes.NewReader(bodyBytes))
+	url := a.gqlURL()
+	slog.Debug("GQL request", "operation", operationName, "url", url, "viaProxy", a.ProxyURL != "")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("twitch: create gql request: %w", err)
 	}

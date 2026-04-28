@@ -82,6 +82,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
 	rootCmd.PersistentFlags().String("twitch-client-id", "", "Twitch Client-ID override")
 	rootCmd.PersistentFlags().String("twitch-user-agent", "", "Twitch User-Agent override")
+	rootCmd.PersistentFlags().String("twitch-proxy-url", "", "Base URL of a Twitch GQL+integrity proxy (e.g. a Cloudflare Worker) used to bypass mid-roll ads")
 	rootCmd.PersistentFlags().String("player", "mpv", "Media player binary (mpv or vlc)")
 	rootCmd.PersistentFlags().StringSlice("player-args", nil, "Extra arguments for the media player")
 	rootCmd.PersistentFlags().Bool("low-latency", false, "Enable Twitch low-latency mode")
@@ -160,6 +161,7 @@ func initConfig(cmd *cobra.Command) error {
 	}
 	bindFlag("twitch-client-id", "twitch.client-id")
 	bindFlag("twitch-user-agent", "twitch.user-agent")
+	bindFlag("twitch-proxy-url", "twitch.proxy-url")
 	bindFlag("player", "general.player")
 	bindFlag("low-latency", "twitch.low-latency")
 	bindFlag("refresh", "general.refresh")
@@ -199,6 +201,10 @@ func runTUI(cmd *cobra.Command, defaultQuality string) error {
 	clientID := viper.GetString("twitch.client-id")
 	userAgent := viper.GetString("twitch.user-agent")
 	api := twitch.NewTwitchAPI(sess.HTTP, clientID, userAgent, nil, nil)
+	api.ProxyURL = viper.GetString("twitch.proxy-url")
+	if api.ProxyURL != "" {
+		slog.Info("Twitch proxy enabled", "url", api.ProxyURL)
+	}
 	usher := twitch.NewUsherService(sess.HTTP)
 	client := twitch.New(sess.HTTP, api, usher)
 

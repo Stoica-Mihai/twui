@@ -244,6 +244,72 @@ func TestAccessToken_Null(t *testing.T) {
 	}
 }
 
+// TestProxyURL_RoutesGQLAndIntegrity verifies that setting ProxyURL redirects
+// both the GQL token request and the integrity-token fetch to /gql and
+// /integrity on the proxy host, leaving Twitch's real domains unused.
+func TestProxyURL_RoutesGQLAndIntegrity(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/integrity":
+			fmt.Fprintf(w, `{"token":"i","expiration":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case "/gql":
+			fmt.Fprint(w, `{"data":{"streamPlaybackAccessToken":{"value":"v","signature":"s"}}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	api := NewTwitchAPI(http.DefaultClient, "cid", "ua", nil, nil)
+	api.ProxyURL = srv.URL
+
+	tok, err := api.AccessToken(context.Background(), "chanA")
+	if err != nil {
+		t.Fatalf("AccessToken: %v", err)
+	}
+	if tok.Token != "v" || tok.Sig != "s" {
+		t.Fatalf("token = %+v, want value=v sig=s", tok)
+	}
+
+	wantPaths := map[string]bool{"/integrity": false, "/gql": false}
+	for _, p := range paths {
+		if _, ok := wantPaths[p]; !ok {
+			t.Errorf("unexpected proxy path %q", p)
+		}
+		wantPaths[p] = true
+	}
+	for p, hit := range wantPaths {
+		if !hit {
+			t.Errorf("proxy path %q never hit; got %v", p, paths)
+		}
+	}
+}
+
+// TestProxyURL_TrailingSlashTrimmed ensures a ProxyURL with a trailing slash
+// resolves to /gql exactly once (not //gql).
+func TestProxyURL_TrailingSlashTrimmed(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Path
+		fmt.Fprint(w, `{"data":{"streamPlaybackAccessToken":{"value":"v","signature":"s"}}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	api := NewTwitchAPI(http.DefaultClient, "cid", "ua", nil, nil)
+	api.ProxyURL = srv.URL + "/"
+	api.integrityToken = "x"
+	api.integrityExpiry = time.Now().Add(time.Hour)
+
+	if _, err := api.AccessToken(context.Background(), "chanA"); err != nil {
+		t.Fatalf("AccessToken: %v", err)
+	}
+	if got != "/gql" {
+		t.Errorf("path = %q, want /gql", got)
+	}
+}
+
 // --- StreamMetadata tests ---
 
 func TestStreamMetadata_Live(t *testing.T) {
@@ -456,11 +522,86 @@ func TestNewTwitchAPI_CustomValues(t *testing.T) {
 
 func TestNewTwitchAPI_SetsDeviceAndSessionIDs(t *testing.T) {
 	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
-	if api.DeviceID == "" {
+	if api.DeviceID() == "" {
 		t.Error("DeviceID should be set")
 	}
 	if api.clientSessionID == "" {
 		t.Error("clientSessionID should be set")
+	}
+}
+
+func TestRotateIdentity_ChangesDeviceAndSession(t *testing.T) {
+	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
+	beforeDev := api.DeviceID()
+	beforeSess := api.clientSessionID
+
+	api.RotateIdentity()
+
+	if api.DeviceID() == beforeDev {
+		t.Errorf("DeviceID unchanged after RotateIdentity: %q", beforeDev)
+	}
+	if api.clientSessionID == beforeSess {
+		t.Errorf("clientSessionID unchanged after RotateIdentity: %q", beforeSess)
+	}
+	if api.DeviceID() == "" || api.clientSessionID == "" {
+		t.Errorf("RotateIdentity left empty values: dev=%q sess=%q",
+			api.DeviceID(), api.clientSessionID)
+	}
+}
+
+func TestRotateIdentity_InvalidatesIntegrityToken(t *testing.T) {
+	api := NewTwitchAPI(http.DefaultClient, "", "", nil, nil)
+	api.integrityToken = "stale"
+	api.integrityExpiry = time.Now().Add(time.Hour)
+
+	api.RotateIdentity()
+
+	if api.integrityToken != "" {
+		t.Errorf("integrityToken not cleared: %q", api.integrityToken)
+	}
+	if !api.integrityExpiry.IsZero() {
+		t.Errorf("integrityExpiry not zeroed: %v", api.integrityExpiry)
+	}
+}
+
+// TestRotateIdentity_NewHeadersOnNextRequest verifies that a request issued
+// after RotateIdentity carries the freshly rotated X-Device-ID and
+// Client-Session-Id headers, not the prior ones.
+func TestRotateIdentity_NewHeadersOnNextRequest(t *testing.T) {
+	const op = "twuiTestRotate"
+	fallbackQueries[op] = `query twuiTestRotate { __typename }`
+	defer delete(fallbackQueries, op)
+
+	type seen struct{ dev, sess string }
+	var captured []seen
+	api := newTestAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		captured = append(captured, seen{
+			dev:  r.Header.Get("X-Device-ID"),
+			sess: r.Header.Get("Client-Session-Id"),
+		})
+		fmt.Fprint(w, `{"data":{"__typename":"Query"}}`)
+	})
+
+	if _, err := api.doGQL(context.Background(), op, "", nil, nil); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	api.RotateIdentity()
+	// Re-seed integrity so the next doGQL doesn't fire an extra
+	// /integrity request that the handler would also capture.
+	api.integrityToken = "test-integrity-token"
+	api.integrityExpiry = time.Now().Add(time.Hour)
+	if _, err := api.doGQL(context.Background(), op, "", nil, nil); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	if len(captured) != 2 {
+		t.Fatalf("got %d requests, want 2", len(captured))
+	}
+	if captured[0].dev == captured[1].dev {
+		t.Errorf("X-Device-ID unchanged across rotation: %q", captured[0].dev)
+	}
+	if captured[0].sess == captured[1].sess {
+		t.Errorf("Client-Session-Id unchanged across rotation: %q", captured[0].sess)
 	}
 }
 
