@@ -104,6 +104,16 @@ type TwitchHLSStream struct {
 	// freezing. Reset when real content resumes.
 	adPausedAt       time.Time
 	adFilterDegraded bool
+
+	// stickyCreativeID + stickyCount detect "forced campaign" cases
+	// where Twitch stitches the same ad creative into every fresh
+	// session we pull through bypass. After stickyAdThreshold
+	// consecutive ad breaks carry the same creative, we conclude
+	// bypass cannot escape the campaign and degrade immediately
+	// rather than wasting more swaps. The creative ID is parsed
+	// from segment titles like "Amazon|2474283100494".
+	stickyCreativeID string
+	stickyCount      int
 }
 
 // bypassCooldown is the minimum gap between two successful BypassAdBreak
@@ -117,6 +127,42 @@ const bypassCooldown = 5 * time.Second
 // no content-bearing session; without this fallback the pipe drains
 // and the player stops mid-stream.
 const maxAdPauseDuration = 20 * time.Second
+
+// stickyAdThreshold is the number of consecutive ad-break entries
+// carrying the same creative ID before we conclude that bypass cannot
+// escape the campaign. Tuned to 3 so a transient repeat (one creative
+// happening to be served twice in a row by chance) doesn't trip the
+// fast-degrade path, but a genuine forced campaign does.
+const stickyAdThreshold = 3
+
+// adCreativeID extracts the creative ID portion of a Twitch ad-segment
+// title. Twitch encodes ad segments as "<advertiser>|<creative-id>"
+// (e.g. "Amazon|2474283100494"); a forced campaign re-uses the same
+// creative-id across breaks even when other identifiers (segment num,
+// stitched-ad date-range id) change. Falls back to the whole title so
+// any consistent fingerprint still keys correctly.
+func adCreativeID(title string) string {
+	if i := strings.IndexByte(title, '|'); i >= 0 {
+		return title[i+1:]
+	}
+	return title
+}
+
+// bumpSticky records one ad-break boundary's creative ID and returns
+// the resulting consecutive-streak count. Reset to 1 on any different
+// creative; persists across content segments so a forced campaign that
+// resumes after a content gap still counts toward the threshold.
+func (t *TwitchHLSStream) bumpSticky(creative string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if creative == t.stickyCreativeID {
+		t.stickyCount++
+	} else {
+		t.stickyCreativeID = creative
+		t.stickyCount = 1
+	}
+	return t.stickyCount
+}
 
 // ErrBypassInFlight is returned by BypassAdBreak when another bypass is
 // currently executing. Callers should treat it as a successful dedup and
@@ -576,6 +622,14 @@ func (t *TwitchHLSStream) shouldFilter(seg hls.Segment) bool {
 			return false
 		}
 		if !lastWasAd {
+			creative := adCreativeID(seg.Title)
+			if count := t.bumpSticky(creative); count >= stickyAdThreshold {
+				slog.Info("Sticky ad campaign detected; degrading filter",
+					"creative", creative, "consecutive_breaks", count)
+				t.DegradeAdFilter()
+				return false
+			}
+
 			slog.Debug("Filtering ad segment", "num", seg.Num, "title", seg.Title)
 			if f := t.outerFiltered(); f != nil {
 				f.Pause()

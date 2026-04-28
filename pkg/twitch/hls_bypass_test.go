@@ -226,3 +226,80 @@ func TestTwitchHLSStream_BypassAdBreak_SingleFlight(t *testing.T) {
 		t.Errorf("BypassAdBreak in-flight err = %v, want ErrBypassInFlight", err)
 	}
 }
+
+func TestAdCreativeID(t *testing.T) {
+	cases := []struct {
+		title, want string
+	}{
+		{"Amazon|2474283100494", "2474283100494"},
+		{"Amazon|abc|def", "abc|def"},
+		{"NoPipe", "NoPipe"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := adCreativeID(c.title); got != c.want {
+			t.Errorf("adCreativeID(%q) = %q, want %q", c.title, got, c.want)
+		}
+	}
+}
+
+// simulateAdBreakBoundary drives shouldFilter through one fresh
+// content → ad transition. Clearing lastWasAd between calls is what
+// makes each invocation re-run the boundary branch.
+func simulateAdBreakBoundary(t *testing.T, s *TwitchHLSStream, title string) {
+	t.Helper()
+	s.lastWasAd = false
+	s.adPausedAt = time.Time{}
+	s.outer = stream.NewFilteredStream(nil)
+	s.shouldFilter(hls.Segment{Num: 1, Title: title})
+}
+
+// TestTwitchHLSStream_ShouldFilter_StickyCreativeDegrades verifies the
+// fast-degrade path: after stickyAdThreshold ad breaks carry the same
+// creative ID, the filter should degrade without waiting for the 25s
+// starvation timeout, regardless of how recently each break started.
+func TestTwitchHLSStream_ShouldFilter_StickyCreativeDegrades(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+	var endCalls int
+	s.OnAdEnd = func() { endCalls++ }
+
+	for i := 1; i < stickyAdThreshold; i++ {
+		simulateAdBreakBoundary(t, s, "Amazon|forced-creative-1")
+		if s.adFilterDegraded {
+			t.Fatalf("filter degraded after %d hits, threshold is %d", i, stickyAdThreshold)
+		}
+	}
+
+	simulateAdBreakBoundary(t, s, "Amazon|forced-creative-1")
+	if !s.adFilterDegraded {
+		t.Errorf("filter not degraded after %d sticky hits", stickyAdThreshold)
+	}
+	if endCalls != 1 {
+		t.Errorf("OnAdEnd fired %d times, want 1", endCalls)
+	}
+	if s.stickyCount != stickyAdThreshold {
+		t.Errorf("stickyCount = %d, want %d", s.stickyCount, stickyAdThreshold)
+	}
+}
+
+// TestTwitchHLSStream_ShouldFilter_StickyResetsOnDifferentCreative
+// pins down the inverse: a different creative ID resets the counter,
+// so a transient repeat doesn't degrade the filter.
+func TestTwitchHLSStream_ShouldFilter_StickyResetsOnDifferentCreative(t *testing.T) {
+	s := NewTwitchHLSStream(&hls.HLSStream{}, false)
+
+	simulateAdBreakBoundary(t, s, "Amazon|c1")
+	simulateAdBreakBoundary(t, s, "Amazon|c1")
+	simulateAdBreakBoundary(t, s, "Amazon|c2") // different creative
+	simulateAdBreakBoundary(t, s, "Amazon|c1") // back to c1; counter restarted
+
+	if s.adFilterDegraded {
+		t.Errorf("filter degraded despite interleaved different creative")
+	}
+	if s.stickyCreativeID != "c1" {
+		t.Errorf("stickyCreativeID = %q, want %q", s.stickyCreativeID, "c1")
+	}
+	if s.stickyCount != 1 {
+		t.Errorf("stickyCount = %d, want 1 after reset", s.stickyCount)
+	}
+}
